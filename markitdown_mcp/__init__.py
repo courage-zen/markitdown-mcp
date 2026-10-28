@@ -1,23 +1,20 @@
-"""MarkItDown MCP Server - A Model Context Protocol server for document conversion.
+"""MarkItDown MCP Server — document-to-Markdown conversion over Streamable HTTP.
 
-This package provides a Model Context Protocol (MCP) server that converts various
-file formats to Markdown using Microsoft's MarkItDown library.
+This package provides a Model Context Protocol (MCP) server that converts
+various file formats to Markdown using Microsoft's MarkItDown library, served
+over stateless Streamable HTTP with optional Bearer-token authentication.
 
 Supported formats include:
 - Office documents (PDF, DOCX, PPTX, XLSX)
 - Images with OCR (JPG, PNG, GIF, BMP, TIFF, WebP)
-- Audio with speech recognition (MP3, WAV, FLAC, M4A, OGG, WMA)
 - Web/markup files (HTML, HTM)
 - Data formats (CSV, JSON, XML)
 - Archives (ZIP) and e-books (EPUB)
 - Text files (TXT, MD, RST)
 """
 
-__version__ = "1.0.0"
-__author__ = "MarkItDown MCP"
-__email__ = "noreply@example.com"
+__version__ = "2.1.0"
 
-from .server import MarkItDownMCPServer
+from .server import mcp
 
-__all__ = ["MarkItDownMCPServer"]
-# Trigger workflow test
+__all__ = ["mcp"]

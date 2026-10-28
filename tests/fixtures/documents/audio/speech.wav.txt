@@ -1,1 +1,0 @@
-Audio transcript: Hello world, this is a test audio file for speech recognition testing.
