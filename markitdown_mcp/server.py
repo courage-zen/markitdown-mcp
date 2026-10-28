@@ -23,7 +23,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("markitdown-mcp")
 
-mcp = MCPServer("markitdown-mcp", version="2.1.0")
+mcp = MCPServer("markitdown-mcp", version="2.2.0")
 
 _raw = os.getenv("MCP_AUTH_KEY", "")
 AUTH_KEYS: set[str] = {k.strip() for k in _raw.split(",") if k.strip()}
@@ -93,18 +93,21 @@ async def convert_file_tool(
     file_path: str = "",
     file_content: str = "",
     filename: str = "",
+    s3_key: str = "",
 ) -> str:
     """Convert a file to Markdown using MarkItDown.
 
     Args:
         file_path: Path to the file to convert
         file_content: Base64 encoded file content (alternative to file_path)
-        filename: Original filename when using file_content
+        filename: Original filename when using file_content or s3_key
+        s3_key: S3 object key to fetch and convert (alternative to file_path)
     """
     return await convert_file_impl(
         file_path=file_path,
         file_content=file_content,
         filename=filename,
+        s3_key=s3_key,
     )
 
 

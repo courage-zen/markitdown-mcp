@@ -9,7 +9,8 @@ An MCP server (`markitdown-mcp`) that converts documents to Markdown over
 Streamable HTTP. It is built for k8s deployment: stateless, Bearer-token auth,
 `/health` probes. The tool surface is exactly two tools — `convert_file` and
 `list_supported_formats` — and their names and schemas are client-facing API:
-changing them breaks every client.
+changing them breaks every client. `convert_file` accepts three optional,
+mutually alternative inputs (`file_path`, `s3_key`, `file_content`).
 
 ## Layout
 
@@ -17,8 +18,9 @@ changing them breaks every client.
 |---|---|
 | `markitdown_mcp/server.py` | MCPServer instance, tool registrations, `AuthKeyMiddleware`, `/health` route, uvicorn entry point |
 | `markitdown_mcp/conversion.py` | Tool implementations (`convert_file_impl`, `list_supported_formats_impl`); raises `ToolError` with sanitized messages |
-| `markitdown_mcp/security.py` | All safety guards: path validation, content bombs, timeouts, size limits |
-| `tests/unit/`, `tests/security/`, `tests/helpers/` | Test suite (pytest, pytest-asyncio) |
+| `markitdown_mcp/security.py` | All safety guards: path validation, S3 key validation, content bombs, timeouts, size limits |
+| `markitdown_mcp/s3source.py` | S3/MinIO object source for the `s3_key` input: env config, streamed download with size/deadline caps |
+| `tests/unit/`, `tests/security/`, `tests/helpers/` | Test suite (pytest, pytest-asyncio; moto mocks S3) |
 | `deploy/Dockerfile`, `deploy/k8s.yaml` | Container image and example k8s manifest |
 | `.github/workflows/build.yml` | CI: ruff + mypy + pytest on push/PR |
 | `.github/workflows/release.yml` | Tag-triggered release: docker images (amd64/arm64) + sdist/wheel + checksums |

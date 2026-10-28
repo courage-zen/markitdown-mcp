@@ -11,11 +11,12 @@ Bearer-token authentication, and a `/health` endpoint for liveness/readiness pro
 
 | Tool | Description |
 |------|-------------|
-| `convert_file` | Convert one file to Markdown, either by server-side path (`file_path`) or inline content (`file_content` base64 + `filename`) |
+| `convert_file` | Convert one file to Markdown, either by server-side path (`file_path`), inline content (`file_content` base64 + `filename`), or an S3 object (`s3_key`) |
 | `list_supported_formats` | List every supported file extension, grouped by category |
 
-Only these two tools are exposed; the schema of `convert_file` is unchanged from
-previous versions.
+Only these two tools are exposed. The `s3_key` input is new in 2.2.0 and optional —
+`file_path` and `file_content` are unchanged, with priority
+`file_path` > `s3_key` > `file_content`.
 
 ## Supported formats
 
@@ -73,12 +74,35 @@ See [`deploy/k8s.yaml`](deploy/k8s.yaml) for an example Deployment + Service wit
 | `MCP_LOG_LEVEL` | `info` | `debug` / `info` / `warning` / `error` |
 | `MCP_AUTH_KEY` | *(empty)* | Bearer token(s); comma-separated for multiple. Empty disables auth — only safe on localhost |
 | `MARKITDOWN_SAFE_DIRS` | *(empty)* | Extra readable directories (absolute, existing paths), path-separator separated |
+| `S3_BUCKET` | *(empty)* | Bucket for the `s3_key` input. With no bucket + credentials set, `s3_key` calls fail with "not configured" |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | *(empty)* | Credentials for the S3 input (shared names with the multica backend) |
+| `AWS_ENDPOINT_URL` | *(empty)* | Custom S3 endpoint, e.g. `http://multica-minio.<ns>.svc.cluster.local:9000` for MinIO |
+| `S3_REGION` | `us-east-1` | Region (falls back to `AWS_REGION`) |
+| `S3_USE_PATH_STYLE` | *(auto)* | `true`/`false`; auto means path-style whenever `AWS_ENDPOINT_URL` is set |
+| `S3_KEY_PREFIXES` | *(empty)* | Comma-separated key-prefix allowlist, matched segment-aware. Empty = no restriction (only safe when every caller is trusted) |
 
 The server reads files from: its working directory, the system temp directory,
 home `Documents`/`Downloads`/`Desktop`/`tmp`, and anything listed in
 `MARKITDOWN_SAFE_DIRS`. Requests outside these are rejected as a security
 violation; path traversal, symlink escapes and dangerous system directories are
 blocked outright.
+
+### Converting objects from S3 / MinIO (multica)
+
+When the server runs in the same Kubernetes namespace as a MinIO (or has
+network access to any S3-compatible store), `convert_file` can fetch objects
+itself — no base64 round-trip, no client-side download:
+
+```json
+{"s3_key": "workspaces/<workspace-id>/<attachment-id>.pdf", "filename": "report.pdf"}
+```
+
+For multica the key is derivable from the attachment metadata an agent already
+has: `workspaces/$MULTICA_WORKSPACE_ID/<attachment-id><extension-from-filename>`.
+Configure `S3_BUCKET` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_ENDPOINT_URL` (pointing at the MinIO service) from the same secret the
+multica backend uses, and set `S3_KEY_PREFIXES` to the workspace prefixes this
+deployment may read.
 
 ## HTTP API
 
@@ -158,6 +182,10 @@ Pushing a tag `v*` triggers `.github/workflows/release.yml`, which:
   attack prevention, system-directory blocklist, dangerous-extension blocklist
 - Content guards on every conversion: XML entity bombs, JSON recursion depth,
   CSV bombs, base64 size cap (10 MB), conversion timeout, output-size limit
+- S3 input: 100 MB streamed download cap, 60 s download deadline, key-prefix
+  allowlist, and sanitized errors (no bucket/endpoint/key details). Any
+  `MCP_AUTH_KEY` holder can read objects under the allowed prefixes — scope
+  them with `S3_KEY_PREFIXES` accordingly
 - Tool errors are sanitized before reaching the client — no stack traces, no
   server paths
 

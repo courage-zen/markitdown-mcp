@@ -36,7 +36,7 @@ class TestMCPServerTools:
 
         convert_tool = next(t for t in result.tools if t.name == "convert_file")
         props = convert_tool.input_schema["properties"]
-        assert set(props.keys()) == {"file_path", "file_content", "filename"}
+        assert set(props.keys()) == {"file_path", "file_content", "filename", "s3_key"}
 
     @pytest.mark.unit
     async def test_list_supported_formats_has_empty_schema(self):
@@ -73,7 +73,7 @@ class TestMCPProtocolHandshake:
 
         async with Client(mcp) as client:
             assert client.server_info.name == "markitdown-mcp"
-            assert client.server_info.version == "2.1.0"
+            assert client.server_info.version == "2.2.0"
             assert client.protocol_version
 
     @pytest.mark.unit

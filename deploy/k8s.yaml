@@ -56,6 +56,30 @@ spec:
             # here, e.g. "/data/docs" (path-separator separated for multiple).
             # - name: MARKITDOWN_SAFE_DIRS
             #   value: "/data/docs"
+            # Optional: S3 input for convert_file. Point at an S3-compatible
+            # store reachable from this pod (e.g. a MinIO service in the same
+            # namespace). Env names mirror the multica backend, so the secret
+            # can be shared with it.
+            # - name: S3_BUCKET
+            #   value: "multica-uploads"
+            # - name: AWS_ENDPOINT_URL
+            #   value: "http://multica-minio.<namespace>.svc.cluster.local:9000"
+            # - name: S3_REGION
+            #   value: "us-east-1"
+            # - name: AWS_ACCESS_KEY_ID
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: multica-backend-secret
+            #       key: AWS_ACCESS_KEY_ID
+            # - name: AWS_SECRET_ACCESS_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: multica-backend-secret
+            #       key: AWS_SECRET_ACCESS_KEY
+            # Optional: restrict s3_key requests to workspace prefixes this
+            # deployment may read (comma-separated, segment-aware matching).
+            # - name: S3_KEY_PREFIXES
+            #   value: "workspaces/11111111-1111-1111-1111-111111111111"
           livenessProbe:
             httpGet:
               path: /health

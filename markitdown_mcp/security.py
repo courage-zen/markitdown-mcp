@@ -33,6 +33,29 @@ class TimeoutError(Exception):
     """Raised when an operation times out."""
 
 
+# 100MB cap applied to any file whose format has no tighter content-specific
+# limit (and to S3 downloads before they hit disk).
+MAX_FILE_BYTES = 100 * 1024 * 1024
+
+# Extensions refused for local paths and S3 keys alike: nothing the converter
+# should ever be asked to open, and a cheap block on smuggling executables.
+DANGEROUS_EXTENSIONS = [
+    ".exe",
+    ".bat",
+    ".cmd",
+    ".sh",
+    ".ps1",
+    ".scr",
+    ".vbs",
+    ".jar",
+    ".app",
+    ".dmg",
+    ".pkg",
+    ".deb",
+    ".rpm",
+]
+
+
 def with_timeout(timeout_seconds: int = 30) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorator to add timeout protection to functions using threading."""
 
@@ -292,7 +315,7 @@ def validate_file_content_security(file_path: str) -> str:
 
         # General file size check
         file_size = Path(file_path).stat().st_size
-        if file_size > 100 * 1024 * 1024:  # 100MB general limit
+        if file_size > MAX_FILE_BYTES:
             raise SecurityError("Security violation: file too large")
 
         return file_path
@@ -550,23 +573,7 @@ def validate_and_sanitize_path(
                     raise SecurityError("Security violation: invalid path")
 
         # Check file extension for potentially dangerous files
-        dangerous_extensions = [
-            ".exe",
-            ".bat",
-            ".cmd",
-            ".sh",
-            ".ps1",
-            ".scr",
-            ".vbs",
-            ".jar",
-            ".app",
-            ".dmg",
-            ".pkg",
-            ".deb",
-            ".rpm",
-        ]
-
-        if path.suffix.lower() in dangerous_extensions:
+        if path.suffix.lower() in DANGEROUS_EXTENSIONS:
             raise SecurityError("Security violation: file type not allowed")
 
         # Additional checks for hidden/system files
@@ -624,3 +631,49 @@ def get_safe_working_directories() -> list[str]:
         safe_dirs.append(str(configured_dir.resolve()))
 
     return safe_dirs
+
+
+def validate_s3_key(key: str, allowed_prefixes: list[str] | None = None) -> str:
+    """Validate an S3 object key requested by a caller.
+
+    Args:
+        key: The object key to fetch (e.g. "workspaces/<ws>/<uuid>.pdf")
+        allowed_prefixes: Optional key-prefix allowlist. Empty or None means
+            no restriction — only appropriate when every caller is trusted.
+
+    Returns:
+        The stripped key, unchanged.
+
+    Raises:
+        SecurityError: If the key is empty, carries ``..`` segments, has a
+            dangerous extension, or falls outside the prefix allowlist.
+    """
+    stripped = key.strip() if isinstance(key, str) else ""
+    if not stripped:
+        raise SecurityError("Security violation: empty S3 key")
+
+    # S3 keys are slash-separated on every platform; reject traversal segments
+    # so a key can never be reinterpreted as a filesystem escape downstream.
+    # Backslashes are normalized to slashes first: a Windows-styled key with
+    # a ".." segment is the same escape attempt.
+    normalized = stripped.replace("\\", "/")
+    segments = normalized.split("/")
+    if any(segment == ".." for segment in segments):
+        raise SecurityError("Security violation: path traversal detected")
+
+    # Same dangerous-extension blocklist the local path check applies, judged
+    # on the key's basename (its final segment).
+    from pathlib import PurePosixPath
+
+    suffix = PurePosixPath(stripped).suffix.lower()
+    if suffix in DANGEROUS_EXTENSIONS:
+        raise SecurityError("Security violation: file type not allowed")
+
+    if allowed_prefixes and not any(
+        stripped == prefix or stripped.startswith(prefix + "/") for prefix in allowed_prefixes
+    ):
+        # Segment-aware matching: "workspaces/abc" admits exactly itself and
+        # its descendants ("workspaces/abc/x.pdf"), never "workspaces/abc123".
+        raise SecurityError("Security violation: key outside allowed prefixes")
+
+    return stripped

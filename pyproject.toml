@@ -1,6 +1,6 @@
 [project]
 name = "markitdown-mcp"
-version = "2.1.0"
+version = "2.2.0"
 description = "MCP server for converting documents to Markdown over Streamable HTTP"
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,7 @@ dependencies = [
     "markitdown[docx,pdf,pptx,xls,xlsx]>=0.1.9",
     "uvicorn>=0.31.0",
     "python-dotenv>=1.0.0",
+    "boto3>=1.28.0",
 ]
 
 [project.scripts]
@@ -35,6 +36,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "httpx>=0.27.0",
+    "moto>=5.0.0",
 ]
 
 [build-system]
@@ -119,5 +121,7 @@ module = [
     "dotenv.*",
     "uvicorn.*",
     "pydantic.*",
+    "boto3.*",
+    "botocore.*",
 ]
 ignore_missing_imports = true

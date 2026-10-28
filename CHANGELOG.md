@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-10-28
+
+### Added
+- **`s3_key` input on `convert_file`**: the server fetches an object from S3-compatible
+  storage (AWS S3 or a MinIO endpoint in the same cluster) and converts it, so clients
+  that store documents in object storage (e.g. multica) can convert without base64-
+  encoding the body. The parameter is optional and additive; `file_path` / `file_content`
+  behave exactly as before. Priority order: `file_path` > `s3_key` > `file_content`.
+  - New environment variables: `S3_BUCKET`, `AWS_ACCESS_KEY_ID`,
+    `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`, `S3_REGION`, `S3_USE_PATH_STYLE` and
+    `S3_KEY_PREFIXES` (names mirror the multica backend so both can share one secret).
+    With S3 unset, `s3_key` calls fail with "not configured" and the other inputs keep
+    working.
+  - Downloads are streamed with a 100 MB cap, a 60 s deadline and connect/read
+    timeouts; the fetched file passes through the same content guards and conversion
+    limits as local files.
+  - New `markitdown_mcp/s3source.py` module; boto3 is the one new dependency.
+
+### Security
+- `S3_KEY_PREFIXES` restricts which object keys callers may request, matched
+  segment-aware ("workspaces/abc" admits itself and its descendants, not
+  "workspaces/abc123/…"). Empty means no restriction — appropriate only when every
+  caller holds a trusted `MCP_AUTH_KEY`, since any key holder can otherwise read any
+  object in the configured bucket. S3 errors are sanitized before reaching the client
+  (no bucket, endpoint or key details).
+
 ## [2.1.0] - 2026-10-28
 
 ### Changed
