@@ -388,7 +388,7 @@ def create_test_directory_structure(
 
         image_path = create_test_image(temp_dir=str(base_path / "images"))
         files_created.append(image_path)
-    except Exception:  # noqa: S110
+    except Exception:
         # Skip binary files if dependencies not available
         pass
 
@@ -403,7 +403,7 @@ def create_test_directory_structure(
 def generate_random_text(length: int) -> str:
     """Generate random text of specified length."""
     chars = string.ascii_letters + string.digits + " \n.,!?"
-    return "".join(random.choices(chars, k=length))  # noqa: S311
+    return "".join(random.choices(chars, k=length))
 
 
 def file_exists_and_readable(file_path: str) -> bool:
@@ -445,6 +445,6 @@ def cleanup_temp_files(*file_paths: str) -> None:
                 path.unlink()
             elif path.is_dir():
                 shutil.rmtree(path)
-        except Exception:  # noqa: S110
+        except Exception:
             # Ignore cleanup errors
             pass

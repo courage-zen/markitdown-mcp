@@ -1,1 +1,0 @@
-docs/guides/KNOWN_ISSUES.md

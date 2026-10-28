@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "markitdown": {
-      "command": "markitdown-mcp",
-      "args": [],
-      "env": {}
-    }
-  }
-}
