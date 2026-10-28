@@ -13,6 +13,7 @@ from pathlib import Path
 from markitdown import MarkItDown
 from mcp.server.mcpserver.exceptions import ToolError
 
+from markitdown_mcp.s3source import S3SourceConfig, fetch_s3_object_to_tempfile
 from markitdown_mcp.security import (
     SecurityError,
     TimeoutError,
@@ -20,6 +21,7 @@ from markitdown_mcp.security import (
     safe_convert_with_limits,
     validate_and_sanitize_path,
     validate_base64,
+    validate_s3_key,
 )
 
 logger = logging.getLogger("markitdown-mcp")
@@ -113,13 +115,15 @@ async def convert_file_impl(
     file_path: str = "",
     file_content: str = "",
     filename: str = "",
+    s3_key: str = "",
 ) -> str:
     """Convert a single file to Markdown.
 
     Args:
         file_path: Path to the file to convert
         file_content: Base64 encoded file content (alternative to file_path)
-        filename: Original filename when using file_content
+        filename: Original filename when using file_content or s3_key
+        s3_key: S3 object key to fetch and convert (alternative to file_path)
     """
     try:
         if file_path:
@@ -149,6 +153,9 @@ async def convert_file_impl(
                 f"Successfully converted {validated_path.name} to "
                 f"Markdown:\n\n{result.text_content}"
             )
+
+        if s3_key:
+            return await _convert_s3_key(s3_key, filename)
 
         if file_content is not None and file_content != "" and filename:
             # Convert from base64 encoded content
@@ -187,6 +194,39 @@ async def convert_file_impl(
     except Exception as e:
         logger.exception("Error in convert_file tool")
         raise ToolError(_sanitize_error_message(e)) from e
+
+
+async def _convert_s3_key(s3_key: str, filename: str) -> str:
+    """Fetch an S3 object and convert it, cleaning up the download after."""
+    config = S3SourceConfig.from_env()
+    if config is None:
+        raise ToolError(
+            "S3 input is not configured on this server; use file_path or file_content instead"
+        )
+
+    try:
+        key = validate_s3_key(s3_key, config.allowed_key_prefixes())
+    except SecurityError as e:
+        logger.warning("Security violation blocked: %s", e)
+        raise ToolError(str(e)) from e
+
+    display_name = filename.strip() or s3_key.rsplit("/", 1)[-1]
+
+    temp_path = None
+    try:
+        temp_path = fetch_s3_object_to_tempfile(config, key)
+        result = safe_convert_with_limits(_get_converter(), temp_path)
+        return f"Successfully converted {display_name} to Markdown:\n\n{result.text_content}"
+    except (TimeoutError, SecurityError) as e:
+        raise ToolError(str(e)) from e
+    except ToolError:
+        raise
+    except Exception as e:
+        logger.exception("Error processing S3 object %s", key)
+        raise ToolError(_sanitize_error_message(e)) from e
+    finally:
+        if temp_path:
+            Path(temp_path).unlink(missing_ok=True)
 
 
 async def list_supported_formats_impl() -> str:
