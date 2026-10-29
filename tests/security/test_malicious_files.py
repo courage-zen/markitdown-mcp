@@ -7,14 +7,15 @@ It must never hang, crash with an unhandled exception, or produce runaway
 output.
 """
 
-import base64
 import json
 import time
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from moto import mock_aws
 
 from markitdown_mcp.conversion import convert_file_impl
 
@@ -150,27 +151,63 @@ class MaliciousFileGenerator:
         return str(file_path)
 
 
-async def _convert_or_error(file_path: str) -> tuple[str | None, str | None]:
-    """Run a conversion, returning (content, error_message) — one of the two."""
-    try:
-        result = await convert_file_impl(file_path=file_path)
-    except ToolError as e:
-        return None, str(e)
-    return result, None
+@contextmanager
+def _s3_backend(monkeypatch):
+    """Enter moto's S3 backend with a configured server env and one bucket."""
+    monkeypatch.setenv("S3_BUCKET", "multica-uploads")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testkey")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testsecret")
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("S3_REGION", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    with mock_aws():
+        import boto3
+
+        client = boto3.client(
+            "s3",
+            region_name="us-east-1",
+            aws_access_key_id="testkey",
+            aws_secret_access_key="testsecret",
+        )
+        client.create_bucket(Bucket="multica-uploads")
+        yield client
+
+
+def _upload(client, local_path: Path, key: str) -> str:
+    """Upload a local file into the mock bucket; return the key used."""
+    client.put_object(Bucket="multica-uploads", Key=key, Body=local_path.read_bytes())
+    return key
+
+
+async def _convert_or_error(file_path: str, monkeypatch) -> tuple[str | None, str | None]:
+    """Run a conversion of the given local file via its S3 key.
+
+    Uploads the file to the mock bucket and calls convert_file_impl with
+    s3_key — mirroring how a caller reaches the conversion layer now that
+    local-path input is gone.
+    """
+    key = f"workspaces/test/{Path(file_path).name}"
+    with _s3_backend(monkeypatch) as client:
+        _upload(client, Path(file_path), key)
+        try:
+            result = await convert_file_impl(s3_key=key)
+        except ToolError as e:
+            return None, str(e)
+        return result, None
 
 
 class TestMaliciousFileDetection:
     """Test detection and handling of malicious file types."""
 
     @pytest.mark.security
-    async def test_zip_bomb_protection(self, temp_dir):
+    async def test_zip_bomb_protection(self, monkeypatch, temp_dir):
         """Test protection against zip bomb attacks."""
         generator = MaliciousFileGenerator()
         zip_bomb_path = Path(temp_dir) / "bomb.zip"
         generator.create_zip_bomb(zip_bomb_path, depth=5)
 
         start = time.time()
-        content, error = await _convert_or_error(str(zip_bomb_path))
+        content, error = await _convert_or_error(str(zip_bomb_path), monkeypatch)
         elapsed = time.time() - start
 
         # Must not hang.
@@ -181,13 +218,13 @@ class TestMaliciousFileDetection:
             assert len(content) < 1024 * 1024, "Zip bomb produced excessive output"
 
     @pytest.mark.security
-    async def test_xml_entity_expansion_protection(self, temp_dir):
+    async def test_xml_entity_expansion_protection(self, monkeypatch, temp_dir):
         """Test protection against XML entity expansion attacks."""
         generator = MaliciousFileGenerator()
         xml_bomb_path = Path(temp_dir) / "xml_bomb.xml"
         generator.create_xml_bomb(xml_bomb_path)
 
-        content, error = await _convert_or_error(str(xml_bomb_path))
+        content, error = await _convert_or_error(str(xml_bomb_path), monkeypatch)
 
         assert content is not None or error is not None
         if content is not None:
@@ -196,13 +233,13 @@ class TestMaliciousFileDetection:
             assert content.count("lol") < 1000, "Entities may have been expanded unsafely"
 
     @pytest.mark.security
-    async def test_json_recursion_protection(self, temp_dir):
+    async def test_json_recursion_protection(self, monkeypatch, temp_dir):
         """Test protection against JSON recursion bombs."""
         generator = MaliciousFileGenerator()
         json_bomb_path = Path(temp_dir) / "json_bomb.json"
         generator.create_json_bomb(json_bomb_path)
 
-        content, error = await _convert_or_error(str(json_bomb_path))
+        content, error = await _convert_or_error(str(json_bomb_path), monkeypatch)
 
         assert content is not None or error is not None
         if content is None:
@@ -212,13 +249,13 @@ class TestMaliciousFileDetection:
             ), f"Unexpected error message: {error}"
 
     @pytest.mark.security
-    async def test_csv_bomb_protection(self, temp_dir):
+    async def test_csv_bomb_protection(self, monkeypatch, temp_dir):
         """Test protection against CSV bombs."""
         generator = MaliciousFileGenerator()
         csv_bomb_path = Path(temp_dir) / "csv_bomb.csv"
         generator.create_csv_bomb(csv_bomb_path)
 
-        content, error = await _convert_or_error(str(csv_bomb_path))
+        content, error = await _convert_or_error(str(csv_bomb_path), monkeypatch)
 
         assert content is not None or error is not None
         if content is not None:
@@ -229,13 +266,13 @@ class TestMaliciousContentSanitization:
     """Test sanitization of malicious content in files."""
 
     @pytest.mark.security
-    async def test_html_script_sanitization(self, temp_dir):
+    async def test_html_script_sanitization(self, monkeypatch, temp_dir):
         """Test that HTML scripts are properly sanitized in output."""
         generator = MaliciousFileGenerator()
         html_path = Path(temp_dir) / "malicious.html"
         generator.create_html_with_scripts(html_path)
 
-        content, error = await _convert_or_error(str(html_path))
+        content, error = await _convert_or_error(str(html_path), monkeypatch)
 
         assert content is not None or error is not None
         if content is not None:
@@ -253,13 +290,13 @@ class TestMaliciousContentSanitization:
                 assert pattern not in lowered, f"Pattern not sanitized: {pattern}"
 
     @pytest.mark.security
-    async def test_unicode_normalization_safety(self, temp_dir):
+    async def test_unicode_normalization_safety(self, monkeypatch, temp_dir):
         """Test safe handling of problematic Unicode characters."""
         generator = MaliciousFileGenerator()
         unicode_path = Path(temp_dir) / "unicode_bomb.txt"
         generator.create_unicode_bomb(unicode_path)
 
-        content, error = await _convert_or_error(str(unicode_path))
+        content, error = await _convert_or_error(str(unicode_path), monkeypatch)
 
         assert content is not None or error is not None
         if content is not None:
@@ -268,7 +305,7 @@ class TestMaliciousContentSanitization:
             assert "Unicode bomb test" in content, "Unicode content not preserved safely"
 
     @pytest.mark.security
-    async def test_binary_content_in_text_files(self, temp_dir):
+    async def test_binary_content_in_text_files(self, monkeypatch, temp_dir):
         """Test handling of binary content disguised as text files."""
         binary_text_path = Path(temp_dir) / "binary_disguised.txt"
 
@@ -278,7 +315,7 @@ class TestMaliciousContentSanitization:
         mixed_content += b"Final text line"
         binary_text_path.write_bytes(mixed_content)
 
-        content, error = await _convert_or_error(str(binary_text_path))
+        content, error = await _convert_or_error(str(binary_text_path), monkeypatch)
 
         assert content is not None or error is not None
 
@@ -287,7 +324,7 @@ class TestFileFormatSpoofing:
     """Test protection against file format spoofing attacks."""
 
     @pytest.mark.security
-    async def test_extension_vs_content_mismatch(self, temp_dir):
+    async def test_extension_vs_content_mismatch(self, monkeypatch, temp_dir):
         """Test handling of files where extension doesn't match content."""
         test_cases = [
             ("fake.txt", '{"this": "is actually JSON", "not": "text"}'),
@@ -300,87 +337,23 @@ class TestFileFormatSpoofing:
             file_path = Path(temp_dir) / filename
             file_path.write_text(file_content)
 
-            content, error = await _convert_or_error(str(file_path))
+            content, error = await _convert_or_error(str(file_path), monkeypatch)
             # Either outcome is acceptable; it must never crash.
             assert content is not None or error is not None
 
     @pytest.mark.security
-    async def test_polyglot_file_handling(self, temp_dir):
+    async def test_polyglot_file_handling(self, monkeypatch, temp_dir):
         """Test handling of polyglot files (multiple format signatures)."""
         generator = MaliciousFileGenerator()
         polyglot_path = Path(temp_dir) / "polyglot.json"
         generator.create_binary_polyglot(polyglot_path)
 
-        content, error = await _convert_or_error(str(polyglot_path))
+        content, error = await _convert_or_error(str(polyglot_path), monkeypatch)
 
         assert content is not None or error is not None
         if content is not None:
             assert len(content) >= 0
 
-
-class TestBase64MaliciousContent:
-    """Test handling of malicious content via base64 encoding."""
-
-    @pytest.mark.security
-    async def test_base64_zip_bomb(self, temp_dir):
-        """Test base64-encoded zip bomb handling."""
-        generator = MaliciousFileGenerator()
-        zip_bomb_path = Path(temp_dir) / "bomb.zip"
-        generator.create_zip_bomb(zip_bomb_path, depth=3)
-
-        encoded_content = base64.b64encode(zip_bomb_path.read_bytes()).decode("ascii")
-
-        try:
-            result = await convert_file_impl(
-                file_content=encoded_content, filename="bomb.zip"
-            )
-            assert len(result) < 1024 * 1024, "Base64 zip bomb produced excessive output"
-        except ToolError:
-            pass  # Rejection is the safer outcome
-
-    @pytest.mark.security
-    async def test_base64_malformed_data(self):
-        """Test handling of malformed base64 data."""
-        malformed_base64_cases = [
-            "Invalid base64!@#$%",
-            "SGVsbG8gV29ybGQ=invalid",
-            "SGVsbG8gV29ybGQ",  # Missing padding
-            "SGVsbG8gV29ybGQ===",  # Too much padding
-            "SGVs\x00bG8gV29ybGQ=",  # Null byte
-            "",  # Empty string
-            "A",  # Too short
-        ]
-
-        for malformed_b64 in malformed_base64_cases:
-            with pytest.raises(ToolError) as exc_info:
-                await convert_file_impl(
-                    file_content=malformed_b64, filename="test.txt"
-                )
-
-            error_msg = str(exc_info.value).lower()
-            # Either a base64-specific rejection or a generic sanitized failure.
-            assert "base64" in error_msg or "required" in error_msg, (
-                f"Unexpected error message: {error_msg}"
-            )
-            # Never leaks internals.
-            assert "traceback" not in error_msg
-
-    @pytest.mark.security
-    async def test_base64_size_limits(self):
-        """Test base64 content size limits (10MB decode cap)."""
-        # 11MB of 'A' — beyond the validate_base64 default cap.
-        large_content = "A" * (11 * 1024 * 1024)
-        encoded_content = base64.b64encode(large_content.encode()).decode()
-
-        with pytest.raises(ToolError) as exc_info:
-            await convert_file_impl(
-                file_content=encoded_content, filename="large.txt"
-            )
-
-        error_msg = str(exc_info.value).lower()
-        assert any(
-            term in error_msg for term in ("size", "large", "limit", "security")
-        ), f"Unexpected error: {error_msg}"
 
 
 class TestResourceExhaustionProtection:
@@ -388,7 +361,7 @@ class TestResourceExhaustionProtection:
 
     @pytest.mark.security
     @pytest.mark.slow
-    async def test_processing_time_limits(self, temp_dir):
+    async def test_processing_time_limits(self, monkeypatch, temp_dir):
         """Test that processing time is bounded."""
         generator = MaliciousFileGenerator()
 
@@ -402,7 +375,7 @@ class TestResourceExhaustionProtection:
             creator(file_path)
 
             start_time = time.time()
-            content, error = await _convert_or_error(str(file_path))
+            content, error = await _convert_or_error(str(file_path), monkeypatch)
             processing_time = time.time() - start_time
 
             assert processing_time < 30, (
@@ -411,7 +384,7 @@ class TestResourceExhaustionProtection:
             assert content is not None or error is not None
 
     @pytest.mark.security
-    async def test_memory_exhaustion_protection(self, temp_dir):
+    async def test_memory_exhaustion_protection(self, monkeypatch, temp_dir):
         """Test protection against memory exhaustion."""
         memory_bomb_path = Path(temp_dir) / "memory_bomb.json"
 
@@ -424,7 +397,7 @@ class TestResourceExhaustionProtection:
         with open(memory_bomb_path, "w") as f:
             json.dump(large_json, f)
 
-        content, error = await _convert_or_error(str(memory_bomb_path))
+        content, error = await _convert_or_error(str(memory_bomb_path), monkeypatch)
 
         assert content is not None or error is not None
         if content is None:

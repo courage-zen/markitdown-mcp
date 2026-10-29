@@ -51,15 +51,11 @@ spec:
                 secretKeyRef:
                   name: markitdown-mcp-auth
                   key: auth-key
-            # Optional: extra directories the server may read from, in addition
-            # to its working directory and /tmp. Mount the volume and list it
-            # here, e.g. "/data/docs" (path-separator separated for multiple).
-            # - name: MARKITDOWN_SAFE_DIRS
-            #   value: "/data/docs"
-            # Optional: S3 input for convert_file. Point at an S3-compatible
-            # store reachable from this pod (e.g. a MinIO service in the same
-            # namespace). Env names mirror the multica backend, so the secret
-            # can be shared with it.
+            # REQUIRED: S3 source for convert_file (the tool's only input).
+            # Point at an S3-compatible store reachable from this pod (e.g. a
+            # MinIO service in the same namespace). Env names mirror the
+            # multica backend, so the secret can be shared with it. Without
+            # these, every convert_file call fails with "not configured".
             # - name: S3_BUCKET
             #   value: "multica-uploads"
             # - name: AWS_ENDPOINT_URL
@@ -99,15 +95,6 @@ spec:
             limits:
               cpu: "2"
               memory: 1Gi
-          # Example: make documents readable by the server through a volume.
-          # volumes:
-          #   - name: docs
-          #     persistentVolumeClaim:
-          #       claimName: docs-pvc
-          # volumeMounts:
-          #   - name: docs
-          #     mountPath: /data/docs
-          #     readOnly: true
 ---
 apiVersion: v1
 kind: Service

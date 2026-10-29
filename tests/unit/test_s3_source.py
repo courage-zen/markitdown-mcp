@@ -322,28 +322,6 @@ class TestConvertFileS3Branch:
             assert "multica-uploads" not in message
             assert "127.0.0.1" not in message
 
-    @pytest.mark.unit
-    async def test_s3_key_takes_priority_over_content(self, monkeypatch):
-        # When both s3_key and file_content are given, s3_key wins (it sits
-        # between file_path and file_content in the priority order).
-        _env(monkeypatch, AWS_ENDPOINT_URL="")
-        from mcp.server.mcpserver.exceptions import ToolError
-
-        from markitdown_mcp.conversion import convert_file_impl
-
-        # Unconfigured S3 + both inputs: the s3 branch must engage, proving
-        # it runs before the base64 branch.
-        monkeypatch.delenv("S3_BUCKET", raising=False)
-        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
-        with pytest.raises(ToolError, match="(?i)not configured"):
-            await convert_file_impl(
-                s3_key="workspaces/ws-1/report.txt",
-                file_content="SGVsbG8=",
-                filename="fallback.txt",
-            )
-
-
 class TestConvertFileS3OverMCP:
     """The s3_key input through the full MCP tool-call path."""
 
@@ -360,9 +338,9 @@ class TestConvertFileS3OverMCP:
 
         schema = convert_file.input_schema
         assert "s3_key" in schema["properties"]
-        # All inputs are optional: existing callers pass any subset.
+        # s3_key is the one required input; filename is an optional nicety.
         assert schema["properties"]["s3_key"].get("type") == "string"
-        assert "required" not in schema or "s3_key" not in schema.get("required", [])
+        assert schema.get("required") == ["s3_key"]
 
     @pytest.mark.unit
     async def test_tool_call_with_s3_key(self, monkeypatch):
