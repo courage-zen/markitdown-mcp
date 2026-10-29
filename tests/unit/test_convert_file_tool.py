@@ -149,6 +149,34 @@ class TestConvertFileBasicFunctionality:
         assert "Main Heading" in result
 
     @pytest.mark.unit
+    async def test_convert_via_pasted_storage_url(self, monkeypatch):
+        """An agent pasting the attachment JSON's url field converts fine.
+
+        Path-style URL with bucket segment, query string and fragment — the
+        server must land on the same object as the bare key. The URL is
+        plain string input: normalization strips it against S3_BUCKET before
+        any I/O, so the fetch itself goes through moto's default endpoint.
+        """
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/sample.txt",
+                Body=b"URL input works.",
+            )
+
+            result = await convert_file_impl(
+                s3_key=(
+                    "http://minio.internal:9000/multica-uploads/workspaces/ws-1/sample.txt"
+                    "?X-Amz-Signature=abc#frag"
+                )
+            )
+
+        assert "Successfully converted" in result
+        assert "URL input works." in result
+
+    @pytest.mark.unit
     async def test_filename_overrides_display_name(self, monkeypatch):
         _env(monkeypatch)
         with aws_backend():
@@ -368,6 +396,38 @@ class TestConvertFileSecurityAspects:
         _env(monkeypatch, S3_KEY_PREFIXES="workspaces/allowed")
         with pytest.raises(ToolError, match="(?i)security violation"):
             await convert_file_impl(s3_key="users/42/report.txt")
+
+    @pytest.mark.unit
+    @pytest.mark.security
+    async def test_prefix_rejection_teaches_key_format(self, monkeypatch):
+        """A wrong-prefix failure tells the agent how to build the key.
+
+        This is the one message an agent that guessed wrong will read; the
+        template turns one failed call into a self-correction.
+        """
+        _env(monkeypatch, S3_KEY_PREFIXES="workspaces/allowed")
+        with pytest.raises(ToolError) as exc_info:
+            await convert_file_impl(s3_key="users/42/report.txt")
+
+        message = str(exc_info.value)
+        assert "workspaces/<workspace-id>/<attachment-id>" in message
+        assert "url" in message.lower()
+
+    @pytest.mark.unit
+    @pytest.mark.security
+    async def test_prefix_rejection_teaches_key_format_for_url_too(self, monkeypatch):
+        """The teaching message fires for URL-shaped inputs as well."""
+        _env(monkeypatch, S3_KEY_PREFIXES="workspaces/allowed")
+        with pytest.raises(ToolError) as exc_info:
+            await convert_file_impl(
+                s3_key="http://minio.internal:9000/multica-uploads/users/42/report.txt"
+            )
+
+        message = str(exc_info.value)
+        assert "workspaces/<workspace-id>/<attachment-id>" in message
+        assert "url" in message.lower()
+        # No deployment details leak.
+        assert "minio.internal" not in message
 
     @pytest.mark.unit
     @pytest.mark.security

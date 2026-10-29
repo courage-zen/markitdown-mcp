@@ -11,7 +11,7 @@ Bearer-token authentication, and a `/health` endpoint for liveness/readiness pro
 
 | Tool | Description |
 |------|-------------|
-| `convert_file` | Convert one document to Markdown from the configured S3/MinIO store (`s3_key`, required; `filename` optional for display) |
+| `convert_file` | Read a Multica attachment (pdf/docx/pptx/xlsx/xls and more) as Markdown: pass the object key — or paste the attachment's `url` field — and the server fetches it from its S3/MinIO store (`s3_key`, required; `filename` optional) |
 | `list_supported_formats` | List every supported file extension, grouped by category |
 
 Only these two tools are exposed. Since 3.0.0 `s3_key` is the **only** input to
@@ -104,6 +104,15 @@ For multica the key is derivable from the attachment metadata an agent already
 has: `workspaces/$MULTICA_WORKSPACE_ID/<attachment-id><extension-from-filename>`.
 Share the same secret the multica backend uses, and set `S3_KEY_PREFIXES` to
 the workspace prefixes this deployment may read.
+
+Multica agents can paste the attachment's storage `url` (from the
+issue/comment JSON `attachments` array) as `s3_key` — the server strips
+scheme, host, query and bucket to recover the key. Or build it from the
+attachment entry: `workspaces/<workspace_id>/<id><ext-from-filename>`.
+
+Output is values, not structure: formulas and merged-cell grouping are
+not preserved. Verify numbers with `convert_file`; inspect the raw XML
+(via attachment download) only to explain how a total is computed.
 
 ## HTTP API
 

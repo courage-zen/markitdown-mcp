@@ -1,6 +1,6 @@
 [project]
 name = "markitdown-mcp"
-version = "3.0.0"
+version = "3.1.0"
 description = "MCP server for converting documents to Markdown over Streamable HTTP"
 readme = "README.md"
 license = "MIT"
@@ -61,6 +61,9 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+# docs/ carries markdown with embedded python snippets (plans/specs);
+# ruff format would rewrite those code blocks. Python sources only.
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = [

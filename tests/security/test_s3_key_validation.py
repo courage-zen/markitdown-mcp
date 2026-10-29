@@ -104,3 +104,91 @@ class TestValidateS3KeyPrefixAllowlist:
             validate_s3_key(
                 "users/42/report.pdf", allowed_prefixes=["workspaces/abc"]
             )
+
+
+class TestValidateS3KeyURLNormalization:
+    """A full storage URL pasted as the s3_key value normalizes to its key.
+
+    Agents copy the `url` field straight from issue/comment JSON; the server
+    strips scheme/host/query so the existing checks run on the bare key.
+    """
+
+    @pytest.mark.security
+    def test_path_style_url_with_bucket_segment(self):
+        key = validate_s3_key(
+            "http://minio.internal:9000/multica-uploads/workspaces/ws-1/report.xlsx",
+            allowed_prefixes=None,
+            bucket="multica-uploads",
+        )
+        assert key == "workspaces/ws-1/report.xlsx"
+
+    @pytest.mark.security
+    def test_virtual_hosted_url_takes_whole_path(self):
+        key = validate_s3_key(
+            "https://multica-uploads.s3.us-east-1.amazonaws.com/workspaces/ws-1/report.xlsx",
+            allowed_prefixes=None,
+            bucket="multica-uploads",
+        )
+        assert key == "workspaces/ws-1/report.xlsx"
+
+    @pytest.mark.security
+    def test_query_string_and_fragment_are_stripped(self):
+        key = validate_s3_key(
+            "http://minio.internal:9000/multica-uploads/workspaces/ws-1/report.xlsx"
+            "?X-Amz-Signature=abc&X-Amz-Expires=60#frag",
+            allowed_prefixes=None,
+            bucket="multica-uploads",
+        )
+        assert key == "workspaces/ws-1/report.xlsx"
+
+    @pytest.mark.security
+    def test_no_bucket_argument_keeps_path_minus_host(self):
+        # Without a known bucket name, the first path segment may still be
+        # the bucket; a leading non-matching segment is preserved.
+        key = validate_s3_key(
+            "https://cdn.example.com/workspaces/ws-1/report.xlsx",
+            allowed_prefixes=None,
+            bucket="multica-uploads",
+        )
+        assert key == "workspaces/ws-1/report.xlsx"
+
+    @pytest.mark.security
+    def test_plain_key_with_slashes_is_not_treated_as_url(self):
+        key = validate_s3_key("workspaces/ws-1/report.xlsx", allowed_prefixes=None)
+        assert key == "workspaces/ws-1/report.xlsx"
+
+    @pytest.mark.security
+    def test_url_traversal_is_rejected_after_normalization(self):
+        with pytest.raises(Exception, match="(?i)security violation"):
+            validate_s3_key(
+                "http://minio.internal:9000/multica-uploads/workspaces/../../etc/passwd",
+                allowed_prefixes=None,
+                bucket="multica-uploads",
+            )
+
+    @pytest.mark.security
+    def test_url_prefix_allowlist_runs_on_normalized_key(self):
+        # The URL carries a bucket segment then a key outside the allowlist;
+        # normalization must land on the key so the prefix check rejects it.
+        with pytest.raises(Exception, match="(?i)key outside allowed prefixes"):
+            validate_s3_key(
+                "http://minio.internal:9000/multica-uploads/users/42/report.xlsx",
+                allowed_prefixes=["workspaces/allowed"],
+                bucket="multica-uploads",
+            )
+
+    @pytest.mark.security
+    def test_url_dangerous_extension_rejected_after_normalization(self):
+        with pytest.raises(Exception, match="(?i)security violation"):
+            validate_s3_key(
+                "http://minio.internal:9000/multica-uploads/workspaces/ws-1/payload.exe",
+                allowed_prefixes=None,
+                bucket="multica-uploads",
+            )
+
+    @pytest.mark.security
+    def test_unparseable_url_like_value_fails_sanitized(self):
+        # "http://" with no host/path is URL-shaped but carries no object;
+        # validation must still reject it, never crash with a traceback.
+        with pytest.raises(Exception, match="(?i)security violation"):
+            validate_s3_key("http://", allowed_prefixes=None)
