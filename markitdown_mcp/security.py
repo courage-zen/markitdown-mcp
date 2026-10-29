@@ -552,7 +552,7 @@ def validate_s3_key(
         # The trailing guidance is the one line an agent that guessed the key
         # format wrong will read; it turns a failed call into a self-correction.
         raise SecurityError(
-            'Security violation: key outside allowed prefixes. Expected '
+            "Security violation: key outside allowed prefixes. Expected "
             '"workspaces/<workspace-id>/<attachment-id><ext>" — use the '
             "attachment's url or build it from its id and filename."
         )
