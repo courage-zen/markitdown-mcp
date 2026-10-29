@@ -23,7 +23,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("markitdown-mcp")
 
-mcp = MCPServer("markitdown-mcp", version="3.0.0")
+mcp = MCPServer("markitdown-mcp", version="3.1.0")
 
 _raw = os.getenv("MCP_AUTH_KEY", "")
 AUTH_KEYS: set[str] = {k.strip() for k in _raw.split(",") if k.strip()}

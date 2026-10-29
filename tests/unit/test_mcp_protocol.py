@@ -116,7 +116,7 @@ class TestMCPProtocolHandshake:
 
         async with Client(mcp) as client:
             assert client.server_info.name == "markitdown-mcp"
-            assert client.server_info.version == "3.0.0"
+            assert client.server_info.version == "3.1.0"
             assert client.protocol_version
 
     @pytest.mark.unit
