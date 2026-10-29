@@ -65,9 +65,10 @@ class TestMCPServerTools:
             assert len(tool.description) > 10
 
     @pytest.mark.unit
-    async def test_convert_file_description_guides_s3_usage(self):
-        """The description tells an agent how to build an s3_key — the only
-        input. Without the derivation rule agents cannot use the tool."""
+    async def test_convert_file_description_is_purpose_first(self):
+        """The description leads with the use case (read a Multica
+        attachment), documents the key template, and states the output
+        limitations — the four gaps the field report identified."""
         from mcp.client import Client
 
         async with Client(mcp) as client:
@@ -75,13 +76,34 @@ class TestMCPServerTools:
 
         convert_tool = next(t for t in result.tools if t.name == "convert_file")
         desc = convert_tool.description or ""
-        # Key derivation rule for multica-style attachments
-        assert "workspaces/" in desc
-        assert "MULTICA_WORKSPACE_ID" in desc
+        # Purpose-first: what it is for, before how it works.
+        assert "Multica attachment" in desc
+        assert "do not download-and-parse" in desc
+        # Office formats named; the full catalog stays on list_supported_formats.
+        for ext in ["pdf", "docx", "pptx", "xlsx", "xls"]:
+            assert ext in desc
+        # Key derivation rule and the paste-a-url shortcut.
+        assert "workspaces/<workspace-id>/<attachment-id>" in desc
+        assert "url" in desc.lower()
+        # Limitations: when to fall back to raw XML.
+        assert "formulas" in desc
+        assert "merged-cell" in desc
         # The removed inputs must not be advertised anymore.
         assert "file_path" not in desc
         assert "file_content" not in desc
         assert "base64" not in desc.lower()
+
+    @pytest.mark.unit
+    async def test_list_supported_formats_description_routes_agents(self):
+        """The formats tool tells an unsure agent to call it first."""
+        from mcp.client import Client
+
+        async with Client(mcp) as client:
+            result = await client.list_tools()
+
+        formats_tool = next(t for t in result.tools if t.name == "list_supported_formats")
+        desc = formats_tool.description or ""
+        assert "before convert_file" in desc
 
 
 class TestMCPProtocolHandshake:

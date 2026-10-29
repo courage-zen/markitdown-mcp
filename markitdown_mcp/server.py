@@ -90,27 +90,28 @@ def _extract_bearer_token(header: str) -> str | None:
 
 @mcp.tool(name="convert_file")
 async def convert_file_tool(s3_key: str, filename: str = "") -> str:
-    """Convert one document to Markdown. Supported: pdf, docx, pptx, xlsx,
-    xls, csv, json, xml, html, epub, zip, txt, md, rst, images.
+    """Convert pdf, docx, pptx, xlsx and xls files to Markdown. To read a
+    Multica attachment, call this tool — the server fetches the file
+    itself; do not download-and-parse by hand.
 
-    The ONLY input is an S3 object key — the server fetches the object from
-    its configured S3/MinIO store and converts it. Inline content and
-    server-local file paths are not accepted.
+    s3_key: "workspaces/<workspace-id>/<attachment-id><ext>", built from
+    the attachment entry in the issue/comment JSON (workspace_id, id,
+    filename extension) — or paste the attachment's url field as-is.
 
-    s3_key: object key in the configured S3/MinIO store. For multica
-        attachments the key is "workspaces/$MULTICA_WORKSPACE_ID/
-        <attachment-id><ext>", where <attachment-id> is the attachment's
-        UUID and <ext> (including the dot) comes from the attachment's
-        filename. Keys outside the configured prefixes are rejected.
-    filename: optional display name (e.g. the attachment's original
-        filename); defaults to the key's basename.
+    Output keeps values, not formulas or merged-cell structure; inspect
+    raw XML only to explain how a total is computed.
+
+    filename: optional display name.
     """
     return await convert_file_impl(s3_key=s3_key, filename=filename)
 
 
 @mcp.tool(name="list_supported_formats")
 async def list_supported_formats_tool() -> str:
-    """List all supported file formats for conversion."""
+    """List the file extensions this server converts to Markdown. Call
+    this before convert_file when unsure an attachment's format is
+    supported.
+    """
     return await list_supported_formats_impl()
 
 
