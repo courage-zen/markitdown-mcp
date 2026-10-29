@@ -549,6 +549,12 @@ def validate_s3_key(
     ):
         # Segment-aware matching: "workspaces/abc" admits exactly itself and
         # its descendants ("workspaces/abc/x.pdf"), never "workspaces/abc123".
-        raise SecurityError("Security violation: key outside allowed prefixes")
+        # The trailing guidance is the one line an agent that guessed the key
+        # format wrong will read; it turns a failed call into a self-correction.
+        raise SecurityError(
+            'Security violation: key outside allowed prefixes. Expected '
+            '"workspaces/<workspace-id>/<attachment-id><ext>" — use the '
+            "attachment's url or build it from its id and filename."
+        )
 
     return stripped

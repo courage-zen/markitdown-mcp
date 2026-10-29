@@ -113,7 +113,7 @@ async def convert_file_impl(s3_key: str, filename: str = "") -> str:
             )
 
         try:
-            key = validate_s3_key(s3_key, config.allowed_key_prefixes())
+            key = validate_s3_key(s3_key, config.allowed_key_prefixes(), bucket=config.bucket)
         except SecurityError as e:
             logger.warning("Security violation blocked: %s", e)
             raise ToolError(str(e)) from e
