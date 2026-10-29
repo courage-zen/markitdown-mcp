@@ -149,6 +149,34 @@ class TestConvertFileBasicFunctionality:
         assert "Main Heading" in result
 
     @pytest.mark.unit
+    async def test_convert_via_pasted_storage_url(self, monkeypatch):
+        """An agent pasting the attachment JSON's url field converts fine.
+
+        Path-style URL with bucket segment, query string and fragment — the
+        server must land on the same object as the bare key. The URL is
+        plain string input: normalization strips it against S3_BUCKET before
+        any I/O, so the fetch itself goes through moto's default endpoint.
+        """
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/sample.txt",
+                Body=b"URL input works.",
+            )
+
+            result = await convert_file_impl(
+                s3_key=(
+                    "http://minio.internal:9000/multica-uploads/workspaces/ws-1/sample.txt"
+                    "?X-Amz-Signature=abc#frag"
+                )
+            )
+
+        assert "Successfully converted" in result
+        assert "URL input works." in result
+
+    @pytest.mark.unit
     async def test_filename_overrides_display_name(self, monkeypatch):
         _env(monkeypatch)
         with aws_backend():
