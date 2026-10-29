@@ -59,13 +59,45 @@ jobs:
           mkdir -p release
           docker save "markitdown-mcp:${TAG}" | gzip > "release/markitdown-mcp-image-linux-${{ matrix.arch }}.tar.gz"
           ls -lh release/
-      - name: Smoke-test image (amd64 only)
-        if: matrix.arch == 'amd64'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image-linux-${{ matrix.arch }}
+          path: release/*
+          if-no-files-found: error
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: image
+    services:
+      minio:
+        # S3-compatible backend: convert_file's only input is an s3_key, so
+        # the round-trip needs a real object store.
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: smoke-access
+          MINIO_ROOT_PASSWORD: smoke-secret
+        ports:
+          - 9000:9000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download amd64 image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-image-linux-amd64
+          path: image
+      - name: Load and start the server
         run: |
           TAG="${GITHUB_REF_NAME}"
+          docker load < image/markitdown-mcp-image-linux-amd64.tar.gz
           docker run -d --rm \
             --name markitdown-mcp-smoke \
+            --add-host=host.docker.internal:host-gateway \
             -e MCP_AUTH_KEY=smoke-key \
+            -e S3_BUCKET=multica-uploads \
+            -e AWS_ACCESS_KEY_ID=smoke-access \
+            -e AWS_SECRET_ACCESS_KEY=smoke-secret \
+            -e AWS_ENDPOINT_URL=http://host.docker.internal:9000 \
+            -e S3_USE_PATH_STYLE=1 \
             -p 8123:8000 \
             "markitdown-mcp:${TAG}"
           trap 'docker stop markitdown-mcp-smoke || true' EXIT
@@ -77,42 +109,74 @@ jobs:
             fi
             sleep 1
           done
-
-          # Health endpoint answers
           curl -sf http://127.0.0.1:8123/health | grep -q '"ok"'
+      - name: Seed an object into MinIO
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live > /dev/null; then break; fi
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:9000/minio/health/live > /dev/null \
+            || { echo "minio never became healthy"; exit 1; }
 
-          # No token -> 401
-          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8123/mcp \
-            -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}},"id":1}')"
-          [ "${code}" = "401" ] || { echo "expected 401 without token, got ${code}"; exit 1; }
+          python3 -m venv /tmp/seedenv
+          /tmp/seedenv/bin/pip install --quiet boto3
+          /tmp/seedenv/bin/python - <<'EOF'
+          import boto3
 
+          client = boto3.client(
+              "s3",
+              endpoint_url="http://127.0.0.1:9000",
+              aws_access_key_id="smoke-access",
+              aws_secret_access_key="smoke-secret",
+              region_name="us-east-1",
+          )
+          client.create_bucket(Bucket="multica-uploads")
+          client.put_object(
+              Bucket="multica-uploads",
+              Key="workspaces/ws-1/sample.txt",
+              Body=b"smoke test content",
+          )
+          print("seeded workspaces/ws-1/sample.txt")
+          EOF
+      - name: Smoke-test the MCP surface
+        run: |
           AUTH='Authorization: Bearer smoke-key'
           CT='Content-Type: application/json'
           ACCEPT='Accept: application/json, text/event-stream'
           INIT='{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}},"id":1}'
 
+          # No token -> 401
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8123/mcp \
+            -H "${CT}" -d "${INIT}")"
+          [ "${code}" = "401" ] || { echo "expected 401 without token, got ${code}"; exit 1; }
+
           # Handshake works with the token
           curl -sf -X POST http://127.0.0.1:8123/mcp -H "${AUTH}" -H "${CT}" -H "${ACCEPT}" -d "${INIT}" \
             | grep -q 'markitdown-mcp'
 
-          # Exactly the two expected tools
+          # Exactly the two expected tools; the removed inputs are gone from the schema
           tools="$(curl -sf -X POST http://127.0.0.1:8123/mcp -H "${AUTH}" -H "${CT}" -H "${ACCEPT}" \
             -d '{"jsonrpc":"2.0","method":"tools/list","id":2}')"
           echo "${tools}" | grep -q 'convert_file' || { echo 'convert_file missing'; exit 1; }
           echo "${tools}" | grep -q 'list_supported_formats' || { echo 'list_supported_formats missing'; exit 1; }
           echo "${tools}" | grep -q 'convert_directory' && { echo 'convert_directory should not exist'; exit 1; } || true
+          echo "${tools}" | grep -q 'file_path' && { echo 'file_path must not appear in the schema'; exit 1; } || true
+          echo "${tools}" | grep -q 'file_content' && { echo 'file_content must not appear in the schema'; exit 1; } || true
 
-          # A real conversion round-trip (base64 content, no host path needed)
-          B64="$(printf 'smoke test content' | base64)"
-          curl -sf -X POST http://127.0.0.1:8123/mcp -H "${AUTH}" -H "${CT}" -H "${ACCEPT}" \
-            -d "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"convert_file\",\"arguments\":{\"file_content\":\"${B64}\",\"filename\":\"smoke.txt\"}},\"id\":3}" \
-            | grep -q 'smoke test content' || { echo 'convert_file round-trip failed'; exit 1; }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-image-linux-${{ matrix.arch }}
-          path: release/*
-          if-no-files-found: error
+          # A real conversion round-trip via s3_key
+          conv="$(curl -sf -X POST http://127.0.0.1:8123/mcp -H "${AUTH}" -H "${CT}" -H "${ACCEPT}" \
+            -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"convert_file","arguments":{"s3_key":"workspaces/ws-1/sample.txt","filename":"smoke.txt"}},"id":3}')"
+          echo "${conv}" | grep -q 'smoke test content' \
+            || { echo 's3_key conversion round-trip failed'; echo "${conv}"; exit 1; }
+
+          # Legacy base64 input is rejected with s3_key guidance
+          legacy="$(curl -sf -X POST http://127.0.0.1:8123/mcp -H "${AUTH}" -H "${CT}" -H "${ACCEPT}" \
+            -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"convert_file","arguments":{"file_content":"c21va2U=","filename":"x.txt"}},"id":4}')"
+          echo "${legacy}" | grep -Eq '"isError"[^,]*true' \
+            || { echo 'legacy file_content call should fail'; echo "${legacy}"; exit 1; }
+          echo "${legacy}" | grep -q 's3_key' \
+            || { echo 'legacy rejection should mention s3_key'; echo "${legacy}"; exit 1; }
 
   package:
     runs-on: ubuntu-latest
@@ -141,7 +205,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [image, package]
+    needs: [image, package, smoke]
     steps:
       - uses: actions/download-artifact@v4
         with:
