@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-10-29
+
+### Fixed
+- **`file_content` now accepts the base64 variants agents actually produce.**
+  `validate_base64` passed the raw input to `b64decode(validate=True)`, which
+  rejects trailing newlines (shell `base64` output always ends with one), MIME
+  76-column folding, embedded whitespace, and the URL-safe alphabet — so a
+  correctly-encoded file failed with "invalid base64 data". Whitespace is now
+  stripped and the URL-safe alphabet normalized before the strict decode;
+  garbage is still rejected and the 10 MB decoded cap is unchanged.
+- **`convert_file`'s tool description now tells agents how to pass inputs.**
+  Previously a 4-line docstring left agents to guess: they tried local paths
+  for `file_path` (it is a server-side path) and never used `s3_key` because
+  the key-derivation rule was undocumented. The description now states the
+  mutually-alternative inputs, the `file_path` > `s3_key` > `file_content`
+  priority, the multica key format
+  `workspaces/$MULTICA_WORKSPACE_ID/<attachment-id><ext>`, and the base64
+  requirements (standard alphabet, single line, filename with extension).
+
 ## [2.2.0] - 2026-10-28
 
 ### Added

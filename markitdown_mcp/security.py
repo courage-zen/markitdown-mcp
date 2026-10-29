@@ -330,6 +330,10 @@ def validate_file_content_security(file_path: str) -> str:
 def validate_base64(data: str, max_size: int = 10 * 1024 * 1024) -> bytes:
     """Validate and decode base64 data with size limits.
 
+    Tolerates the common encodings agents produce: trailing newlines, MIME
+    line folding, embedded whitespace, and the URL-safe alphabet (-_
+    instead of +/). Garbage is still rejected outright.
+
     Args:
         data: Base64 encoded string
         max_size: Maximum allowed decoded size in bytes
@@ -345,12 +349,17 @@ def validate_base64(data: str, max_size: int = 10 * 1024 * 1024) -> bytes:
         if not isinstance(data, str):
             raise SecurityError("Security violation: invalid base64 format")
 
+        # Strip all ASCII whitespace (newlines, folding, spaces between chunks)
+        compact = "".join(data.split())
+
         # Check for empty or too short strings
-        if not data or len(data.strip()) == 0:
+        if not compact:
             raise SecurityError("Security violation: invalid base64 data - empty content")
 
-        # Decode with validation
-        decoded = base64.b64decode(data, validate=True)
+        # Normalize the URL-safe alphabet to the standard one, then decode
+        # with strict validation so any remaining garbage is rejected.
+        normalized = compact.replace("-", "+").replace("_", "/")
+        decoded = base64.b64decode(normalized, validate=True)
 
         # Check size limit
         if len(decoded) > max_size:
