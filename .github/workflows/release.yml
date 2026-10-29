@@ -70,18 +70,19 @@ jobs:
     needs: image
     steps:
       - uses: actions/checkout@v4
-      - name: Start MinIO
+      - name: Start S3 backend (moto server)
         # convert_file's only input is an s3_key, so the round-trip needs a
-        # real object store. MinIO images live on quay.io (removed from
-        # Docker Hub), and the service-container syntax can't pass `server
-        # /data`, so run it as a plain detached container instead.
+        # real S3 endpoint. MinIO images are no longer anonymously pullable
+        # (removed from Docker Hub; quay.io requires a login), so serve the
+        # S3 API from moto — the same backend the test suite uses.
+        # Bind 0.0.0.0 — the server container reaches the host through
+        # host.docker.internal, not through loopback. No EXIT trap: each
+        # step runs in its own shell, so a step-scoped trap would kill the
+        # server before later steps run; the ephemeral runner handles cleanup.
         run: |
-          docker run -d --name minio-smoke \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=smoke-access \
-            -e MINIO_ROOT_PASSWORD=smoke-secret \
-            quay.io/minio/minio:latest server /data
-          trap 'docker stop minio-smoke || true' EXIT
+          python3 -m venv /tmp/s3env
+          /tmp/s3env/bin/pip install --quiet "moto[server]" boto3
+          /tmp/s3env/bin/moto_server -H 0.0.0.0 -p 9000 > /tmp/moto.log 2>&1 &
       - name: Download amd64 image artifact
         uses: actions/download-artifact@v4
         with:
@@ -102,7 +103,6 @@ jobs:
             -e S3_USE_PATH_STYLE=1 \
             -p 8123:8000 \
             "markitdown-mcp:${TAG}"
-          trap 'docker stop markitdown-mcp-smoke || true' EXIT
 
           # Wait for /health to come up
           for i in $(seq 1 30); do
@@ -112,18 +112,17 @@ jobs:
             sleep 1
           done
           curl -sf http://127.0.0.1:8123/health | grep -q '"ok"'
-      - name: Seed an object into MinIO
+      - name: Seed an object into the S3 backend
         run: |
+          # moto server accepts any credentials; wait for it to answer.
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:9000/minio/health/live > /dev/null; then break; fi
+            if curl -sf http://127.0.0.1:9000/ > /dev/null 2>&1; then break; fi
             sleep 2
           done
-          curl -sf http://127.0.0.1:9000/minio/health/live > /dev/null \
-            || { echo "minio never became healthy"; exit 1; }
+          curl -sf http://127.0.0.1:9000/ > /dev/null \
+            || { echo "moto server never became healthy"; cat /tmp/moto.log; exit 1; }
 
-          python3 -m venv /tmp/seedenv
-          /tmp/seedenv/bin/pip install --quiet boto3
-          /tmp/seedenv/bin/python - <<'EOF'
+          /tmp/s3env/bin/python - <<'EOF'
           import boto3
 
           client = boto3.client(
