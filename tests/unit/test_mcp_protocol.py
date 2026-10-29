@@ -62,6 +62,28 @@ class TestMCPServerTools:
             assert tool.description
             assert len(tool.description) > 10
 
+    @pytest.mark.unit
+    async def test_convert_file_description_guides_s3_usage(self):
+        """The description tells an agent how to build an s3_key and which
+        input to prefer — without it agents fall back to file_path/base64
+        and fail."""
+        from mcp.client import Client
+
+        async with Client(mcp) as client:
+            result = await client.list_tools()
+
+        convert_tool = next(t for t in result.tools if t.name == "convert_file")
+        desc = convert_tool.description or ""
+        # Key derivation rule for multica-style attachments
+        assert "workspaces/" in desc
+        assert "MULTICA_WORKSPACE_ID" in desc
+        # Inputs are mutually alternative with a documented priority
+        assert "file_path" in desc and "s3_key" in desc and "file_content" in desc
+        # file_path is a server-side path, not the agent's local filesystem
+        assert "server" in desc.lower()
+        # base64 must be single-line standard alphabet
+        assert "base64" in desc.lower()
+
 
 class TestMCPProtocolHandshake:
     """Protocol basics negotiated by the in-memory client."""
@@ -73,7 +95,7 @@ class TestMCPProtocolHandshake:
 
         async with Client(mcp) as client:
             assert client.server_info.name == "markitdown-mcp"
-            assert client.server_info.version == "2.2.0"
+            assert client.server_info.version == "2.2.1"
             assert client.protocol_version
 
     @pytest.mark.unit

@@ -23,7 +23,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("markitdown-mcp")
 
-mcp = MCPServer("markitdown-mcp", version="2.2.0")
+mcp = MCPServer("markitdown-mcp", version="2.2.1")
 
 _raw = os.getenv("MCP_AUTH_KEY", "")
 AUTH_KEYS: set[str] = {k.strip() for k in _raw.split(",") if k.strip()}
@@ -95,13 +95,25 @@ async def convert_file_tool(
     filename: str = "",
     s3_key: str = "",
 ) -> str:
-    """Convert a file to Markdown using MarkItDown.
+    """Convert one document to Markdown. Supported: pdf, docx, pptx, xlsx,
+    xls, csv, json, xml, html, epub, zip, txt, md, rst, images.
 
-    Args:
-        file_path: Path to the file to convert
-        file_content: Base64 encoded file content (alternative to file_path)
-        filename: Original filename when using file_content or s3_key
-        s3_key: S3 object key to fetch and convert (alternative to file_path)
+    Inputs are mutually alternative — pass exactly ONE of:
+      1. file_path: path on the SERVER's filesystem (not your local
+         machine). Use only for files already visible to the server.
+      2. s3_key: object key in the configured S3/MinIO store. PREFERRED
+         for platform-stored attachments. For multica attachments the key
+         is "workspaces/$MULTICA_WORKSPACE_ID/<attachment-id><ext>", where
+         <attachment-id> is the attachment's UUID and <ext> (including the
+         dot) comes from the attachment's filename. Keys outside the
+         configured prefixes are rejected. Optionally pass filename for a
+         nicer display name / correct suffix.
+      3. file_content: the raw bytes, base64-encoded (standard alphabet,
+         single line, no data URI prefix). Max 10 MB decoded. Use for
+         small files you already have in memory; pass filename too (its
+         extension is required for format detection).
+
+    Priority when several are given: file_path > s3_key > file_content.
     """
     return await convert_file_impl(
         file_path=file_path,
