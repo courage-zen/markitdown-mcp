@@ -12,6 +12,7 @@ import json
 import re
 import tempfile
 import unicodedata
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar, cast
@@ -468,24 +469,63 @@ def safe_convert_with_limits(markitdown_instance: Any, file_path: str) -> Any:
                 Path(sanitized_file_path).unlink(missing_ok=True)
 
 
-def validate_s3_key(key: str, allowed_prefixes: list[str] | None = None) -> str:
+def _normalize_s3_key_value(value: str, bucket: str | None) -> str:
+    """Normalize a caller-supplied s3_key value to a bare object key.
+
+    Multica's attachment JSON carries full storage URLs; agents paste them
+    as-is. Strip scheme, host, port, query, and fragment; for path-style
+    URLs also strip the leading bucket segment when it matches. Mirrors the
+    multica backend's S3Storage.KeyFromURL host/bucket stripping.
+
+    A value with no scheme is a plain key and passes through unchanged.
+    URL-shaped values with no object path raise SecurityError so a garbage
+    input never reaches the S3 client.
+    """
+    if "://" not in value:
+        return value
+
+    parsed = urllib.parse.urlparse(value)
+    path = parsed.path or ""
+    if not path.lstrip("/"):
+        raise SecurityError("Security violation: URL has no object path")
+
+    segments = [segment for segment in path.lstrip("/").split("/") if segment]
+    if bucket and segments and segments[0] == bucket:
+        segments = segments[1:]
+    if not segments:
+        raise SecurityError("Security violation: URL has no object path")
+
+    return "/".join(segments)
+
+
+def validate_s3_key(
+    key: str,
+    allowed_prefixes: list[str] | None = None,
+    *,
+    bucket: str | None = None,
+) -> str:
     """Validate an S3 object key requested by a caller.
 
     Args:
-        key: The object key to fetch (e.g. "workspaces/<ws>/<uuid>.pdf")
+        key: The object key to fetch (e.g. "workspaces/<ws>/<uuid>.pdf"),
+            or a full storage URL, which is normalized to its key first.
         allowed_prefixes: Optional key-prefix allowlist. Empty or None means
             no restriction — only appropriate when every caller is trusted.
+        bucket: Optional configured bucket name, used to strip the bucket
+            segment from path-style URLs.
 
     Returns:
-        The stripped key, unchanged.
+        The normalized, stripped key.
 
     Raises:
         SecurityError: If the key is empty, carries ``..`` segments, has a
             dangerous extension, or falls outside the prefix allowlist.
     """
-    stripped = key.strip() if isinstance(key, str) else ""
-    if not stripped:
+    raw = key.strip() if isinstance(key, str) else ""
+    if not raw:
         raise SecurityError("Security violation: empty S3 key")
+
+    stripped = _normalize_s3_key_value(raw, bucket)
 
     # S3 keys are slash-separated on every platform; reject traversal segments
     # so a key can never be reinterpreted as a filesystem escape downstream.
