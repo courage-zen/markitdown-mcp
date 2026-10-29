@@ -9,8 +9,10 @@ An MCP server (`markitdown-mcp`) that converts documents to Markdown over
 Streamable HTTP. It is built for k8s deployment: stateless, Bearer-token auth,
 `/health` probes. The tool surface is exactly two tools — `convert_file` and
 `list_supported_formats` — and their names and schemas are client-facing API:
-changing them breaks every client. `convert_file` accepts three optional,
-mutually alternative inputs (`file_path`, `s3_key`, `file_content`).
+changing them breaks every client. `convert_file` takes exactly one required
+input (`s3_key`); the server fetches and converts the object from its
+configured S3/MinIO store. Local-path and base64 inputs were removed in
+3.0.0 and must not be reintroduced without a maintainer decision.
 
 ## Layout
 
@@ -57,9 +59,10 @@ TestClient in `tests/unit/test_server_http.py`.
 - Do not create or move tags, and do not run the release workflow, unless the
   maintainer explicitly asked for a release. A release is triggered by pushing a
   tag `v*` and must match the version in `pyproject.toml`.
-- The server reads and writes files on the host it runs on. Do not add a code
-  path that reads outside the paths the caller supplies or outside the
-  safe-directory allowlist in `security.py`.
+- The only file the server reads is the S3 object the caller's `s3_key`
+  names (streamed to a temp file). Do not add code paths that read the host
+  filesystem or accept inline file content; both were deliberately removed
+  in 3.0.0.
 - New dependencies need a justification in the PR.
 - The server is stateless by design. Do not introduce in-memory session state,
   client-session affinity, or SSE streams without checking with the maintainer.

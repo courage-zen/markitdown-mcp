@@ -2,7 +2,6 @@
 Additional coverage for the security helpers in markitdown_mcp.security.
 """
 
-import base64
 import json
 import tempfile
 from pathlib import Path
@@ -15,7 +14,6 @@ from markitdown_mcp.security import (
     extract_text_from_binary,
     safe_convert_with_limits,
     sanitize_unicode_text,
-    validate_base64,
     validate_file_content_security,
     validate_json_security,
     validate_xml_security,
@@ -178,26 +176,6 @@ class TestAdditionalCoverage:
             return "no timeout"
 
         assert operation() == "no timeout"
-
-    def test_validate_base64_valid(self):
-        """Test base64 validation with valid data."""
-        test_data = "Hello, world!"
-        encoded = base64.b64encode(test_data.encode()).decode()
-        result = validate_base64(encoded)
-        assert result.decode() == test_data
-
-    def test_validate_base64_invalid(self):
-        """Test base64 validation with invalid data."""
-        with pytest.raises(SecurityError):
-            validate_base64("invalid_base64!")
-
-    def test_validate_base64_too_large(self):
-        """Test base64 validation with data too large."""
-        large_data = "x" * (11 * 1024 * 1024)
-        encoded = base64.b64encode(large_data.encode()).decode()
-
-        with pytest.raises(SecurityError):
-            validate_base64(encoded, max_size=1024)
 
     def test_safe_convert_with_limits_success(self):
         """Test safe conversion with limits succeeds."""

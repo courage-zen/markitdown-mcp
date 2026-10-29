@@ -1,24 +1,75 @@
 """
 Unit tests for the convert_file MCP tool.
+
+convert_file accepts exactly one input source — an S3 object key. These tests
+drive the tool with moto's S3 backend and assert the s3-only contract:
+valid keys convert, invalid keys are rejected before any download, and
+legacy inputs (file_path / file_content) are refused with guidance.
 """
 
-import base64
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from moto import mock_aws
 
 from markitdown_mcp.conversion import convert_file_impl
-from markitdown_mcp.security import (
-    get_safe_working_directories,
-    validate_file_content_security,
-)
-from tests.helpers.file_utils import (
-    create_minimal_docx,
-    create_minimal_xlsx,
-    create_test_file,
-)
+from markitdown_mcp.security import validate_file_content_security
+from tests.helpers.file_utils import create_minimal_docx, create_minimal_xlsx
+
+
+@contextmanager
+def aws_backend():
+    """Enter moto's mock backend.
+
+    moto's own ``mock_aws`` decorator wraps the test function in a plain
+    sync wrapper, which hides the coroutine function from pytest-asyncio's
+    collection ("async def functions are not natively supported"). The
+    context-manager form keeps the async test function intact.
+    """
+    with mock_aws():
+        yield
+
+
+def _env(monkeypatch, **overrides: str) -> None:
+    """Set a complete S3 env block, applying overrides on top."""
+    base = {
+        "S3_BUCKET": "multica-uploads",
+        "AWS_ACCESS_KEY_ID": "testkey",
+        "AWS_SECRET_ACCESS_KEY": "testsecret",
+        "AWS_ENDPOINT_URL": "",
+        "S3_REGION": "us-east-1",
+    }
+    base.update(overrides)
+    # Remove keys explicitly set to "" so overrides can blank a value.
+    for name, value in base.items():
+        if value == "":
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
+def _make_bucket(region: str = "us-east-1", bucket: str = "multica-uploads"):
+    """Create the bucket inside the current moto backend and return a client.
+
+    Credentials are passed explicitly: the env vars the config reads are what
+    _env() set, and with mock_aws active boto3's own env-resolution can pick
+    the mock's placeholder key instead — which moto then rejects as unknown.
+    """
+    import os
+
+    import boto3
+
+    client = boto3.client(
+        "s3",
+        region_name=region,
+        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    )
+    client.create_bucket(Bucket=bucket)
+    return client
 
 
 def _tool_error(exc_info: pytest.ExceptionInfo) -> str:
@@ -27,12 +78,20 @@ def _tool_error(exc_info: pytest.ExceptionInfo) -> str:
 
 
 class TestConvertFileBasicFunctionality:
-    """Test basic convert_file tool functionality."""
+    """convert_file converts objects fetched from S3 by key."""
 
     @pytest.mark.unit
-    async def test_convert_text_file_by_path(self, sample_text_file):
-        """Test converting a text file using file path."""
-        result = await convert_file_impl(file_path=sample_text_file)
+    async def test_convert_text_object(self, monkeypatch):
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/sample.txt",
+                Body=b"Hello, World!\nThis is a test file.\nWith multiple lines.",
+            )
+
+            result = await convert_file_impl(s3_key="workspaces/ws-1/sample.txt")
 
         assert "Successfully converted" in result
         assert "sample.txt" in result
@@ -40,30 +99,74 @@ class TestConvertFileBasicFunctionality:
         assert "multiple lines" in result
 
     @pytest.mark.unit
-    async def test_convert_json_file_by_path(self, sample_json_file):
-        """Test converting a JSON file using file path."""
-        result = await convert_file_impl(file_path=sample_json_file)
+    async def test_convert_json_object(self, monkeypatch):
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/sample.json",
+                Body=b'{"name": "Test Document", "data": [1, 2, 3]}',
+            )
+
+            result = await convert_file_impl(s3_key="workspaces/ws-1/sample.json")
 
         assert "Successfully converted" in result
         assert "sample.json" in result
         assert "test" in result.lower()
 
     @pytest.mark.unit
-    async def test_convert_csv_file_by_path(self, sample_csv_file):
-        """Test converting a CSV file using file path."""
-        result = await convert_file_impl(file_path=sample_csv_file)
+    async def test_convert_csv_object(self, monkeypatch):
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/sample.csv",
+                Body=b"Name,Age,City\nJohn Doe,25,NYC\nJane Smith,30,London",
+            )
+
+            result = await convert_file_impl(s3_key="workspaces/ws-1/sample.csv")
 
         assert "Successfully converted" in result
         assert "sample.csv" in result
-        assert "Name,Age,City" in result or "John Doe" in result
+        assert "John Doe" in result
 
     @pytest.mark.unit
-    async def test_convert_html_file_by_path(self, sample_html_file):
-        """Test converting an HTML file using file path."""
-        result = await convert_file_impl(file_path=sample_html_file)
+    async def test_convert_html_object(self, monkeypatch):
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/sample.html",
+                Body=b"<html><body><h1>Main Heading</h1><p>Content</p></body></html>",
+            )
+
+            result = await convert_file_impl(s3_key="workspaces/ws-1/sample.html")
 
         assert "Successfully converted" in result
         assert "Main Heading" in result
+
+    @pytest.mark.unit
+    async def test_filename_overrides_display_name(self, monkeypatch):
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/01a184fc-2434-7856-9461-7703c5da35a1.xlsx",
+                Body=b"placeholder",
+            )
+
+            result = await convert_file_impl(
+                s3_key="workspaces/ws-1/01a184fc-2434-7856-9461-7703c5da35a1.xlsx",
+                filename="2026年江苏电信盲评表.xlsx",
+            )
+
+        assert "Successfully converted" in result
+        assert "2026年江苏电信盲评表.xlsx" in result
+        assert "01a184fc" not in result
 
     @pytest.mark.unit
     def test_ooxml_files_are_not_routed_through_xml_sanitizer(self, temp_dir):
@@ -77,168 +180,148 @@ class TestConvertFileBasicFunctionality:
             assert validated_path == file_path
             assert zipfile.is_zipfile(validated_path)
 
-    @pytest.mark.unit
-    def test_markitdown_safe_dirs_env_adds_absolute_existing_directories(
-        self, monkeypatch, temp_dir
-    ):
-        """MARKITDOWN_SAFE_DIRS extends the operator-controlled safe directory list."""
-        import os
+class TestConvertFileLegacyInputsRejected:
+    """The removed inputs (file_path / file_content) are refused.
 
-        extra_dir = Path(temp_dir) / "extra-safe-dir"
-        extra_dir.mkdir()
-        missing_dir = Path(temp_dir) / "missing"
-        monkeypatch.setenv(
-            "MARKITDOWN_SAFE_DIRS",
-            os.pathsep.join([str(extra_dir), str(missing_dir), "relative-dir"]),
-        )
-
-        safe_dirs = get_safe_working_directories()
-
-        assert str(extra_dir.resolve()) in safe_dirs
-        assert str(missing_dir.resolve()) not in safe_dirs
-        assert "relative-dir" not in safe_dirs
-
-
-class TestConvertFileBase64Content:
-    """Test convert_file tool with base64 encoded content."""
+    The enforcement boundary for client calls is the tool schema (see
+    TestConvertFileViaMCPClient.test_legacy_file_path_over_mcp_is_rejected);
+    at the Python level the strict signature simply does not accept the
+    legacy kwargs.
+    """
 
     @pytest.mark.unit
-    async def test_convert_base64_text_content(self, sample_base64_content):
-        """Test converting text content via base64 encoding."""
-        result = await convert_file_impl(
-            file_content=sample_base64_content["encoded"],
-            filename=sample_base64_content["filename"],
-        )
+    async def test_file_path_is_rejected(self, monkeypatch, temp_dir):
+        _env(monkeypatch)
+        local = Path(temp_dir) / "sample.txt"
+        local.write_text("local file content")
 
-        assert "Successfully converted" in result
-        assert sample_base64_content["filename"] in result
-        assert sample_base64_content["original"] in result
+        with pytest.raises(TypeError, match="file_path"):
+            await convert_file_impl(file_path=str(local))
 
     @pytest.mark.unit
-    async def test_convert_base64_json_content(self):
-        """Test converting JSON content via base64."""
-        json_content = '{"message": "Hello from base64", "type": "test"}'
-        encoded_content = base64.b64encode(json_content.encode()).decode()
+    async def test_file_content_is_rejected(self, monkeypatch):
+        import base64
 
-        result = await convert_file_impl(
-            file_content=encoded_content, filename="test.json"
-        )
-
-        assert "Successfully converted" in result
-        assert "Hello from base64" in result
+        _env(monkeypatch)
+        with pytest.raises(TypeError, match="file_content"):
+            await convert_file_impl(
+                file_content=base64.b64encode(b"hello").decode(), filename="hello.txt"
+            )
 
     @pytest.mark.unit
-    async def test_convert_large_base64_content(self):
-        """Test converting large content via base64."""
-        # 100KB of text content
-        large_content = "Large content line.\n" * 5000
-        encoded_content = base64.b64encode(large_content.encode()).decode()
-
-        result = await convert_file_impl(
-            file_content=encoded_content, filename="large.txt"
-        )
-
-        assert "Successfully converted" in result
-        assert "Large content line" in result
+    async def test_no_input_is_rejected(self, monkeypatch):
+        _env(monkeypatch)
+        with pytest.raises(TypeError, match="s3_key"):
+            await convert_file_impl()
 
 
 class TestConvertFileErrorCases:
-    """Test error handling in convert_file tool."""
+    """Error handling in convert_file tool."""
 
     @pytest.mark.unit
-    async def test_nonexistent_file_error(self):
-        """Test error when file doesn't exist."""
-        with pytest.raises(ToolError) as exc_info:
-            await convert_file_impl(file_path="nonexistent_file.txt")
+    async def test_missing_object_error(self, monkeypatch):
+        """A key that does not exist fails with a sanitized message."""
+        _env(monkeypatch)
+        with aws_backend():
+            _make_bucket()
 
-        error_msg = _tool_error(exc_info).lower()
-        assert "not found" in error_msg or "security violation" in error_msg
+            with pytest.raises(ToolError) as exc_info:
+                await convert_file_impl(s3_key="workspaces/ws-1/nonexistent.txt")
 
-    @pytest.mark.unit
-    async def test_missing_arguments_error(self):
-        """Test error when required arguments are missing."""
-        with pytest.raises(ToolError) as exc_info:
-            await convert_file_impl()
-
-        assert "required" in _tool_error(exc_info).lower()
+        message = _tool_error(exc_info).lower()
+        assert "not found" in message or "not accessible" in message
+        # No bucket or endpoint details leak.
+        assert "multica-uploads" not in message
 
     @pytest.mark.unit
-    async def test_invalid_base64_error(self):
-        """Test error with invalid base64 content."""
+    async def test_empty_key_error(self, monkeypatch):
+        _env(monkeypatch)
         with pytest.raises(ToolError) as exc_info:
-            await convert_file_impl(
-                file_content="!!invalid-base64!!",  # This will definitely fail
-                filename="test.txt",
-            )
+            await convert_file_impl(s3_key="   ")
 
-        assert "base64" in _tool_error(exc_info).lower()
+        assert "security violation" in _tool_error(exc_info).lower()
 
     @pytest.mark.unit
-    async def test_missing_filename_for_base64(self):
-        """Test error when filename is missing for base64 content."""
-        content = base64.b64encode(b"test content").decode()
+    async def test_dangerous_extension_rejected(self, monkeypatch):
+        _env(monkeypatch)
+        with pytest.raises(ToolError, match="(?i)security violation"):
+            await convert_file_impl(s3_key="workspaces/ws-1/payload.exe")
 
-        with pytest.raises(ToolError) as exc_info:
-            await convert_file_impl(file_content=content)  # Missing filename
-
-        assert "required" in _tool_error(exc_info).lower()
+    @pytest.mark.unit
+    async def test_unconfigured_s3_reports_not_configured(self, monkeypatch):
+        _env(
+            monkeypatch,
+            S3_BUCKET="",
+            AWS_ACCESS_KEY_ID="",
+            AWS_SECRET_ACCESS_KEY="",
+        )
+        with pytest.raises(ToolError, match="(?i)not configured"):
+            await convert_file_impl(s3_key="workspaces/ws-1/report.txt")
 
 
 class TestConvertFileEdgeCases:
-    """Test edge cases for convert_file tool."""
+    """Edge cases for convert_file tool."""
 
     @pytest.mark.unit
-    async def test_empty_file_conversion(self, empty_file):
-        """Test converting an empty file."""
-        result = await convert_file_impl(file_path=empty_file)
+    async def test_empty_object_conversion(self, monkeypatch):
+        """Converting a zero-byte object."""
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads", Key="workspaces/ws-1/empty.txt", Body=b""
+            )
+
+            result = await convert_file_impl(s3_key="workspaces/ws-1/empty.txt")
 
         assert "Successfully converted" in result
 
     @pytest.mark.unit
-    async def test_unicode_filename_handling(self, unicode_filename_file):
-        """Test handling files with unicode characters in filename."""
-        result = await convert_file_impl(file_path=unicode_filename_file)
+    async def test_unicode_filename_display(self, monkeypatch):
+        """A filename with unicode characters shows up in the success message."""
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/attachment-1.txt",
+                Body="Unicode test: 你好世界 🌍 émojis and accénts".encode(),
+            )
+
+            result = await convert_file_impl(
+                s3_key="workspaces/ws-1/attachment-1.txt",
+                filename="测试文件_🚀_test.txt",
+            )
 
         assert "Successfully converted" in result
-        assert "Unicode filename test content" in result
+        assert "测试文件" in result
+        assert "你好世界" in result
 
     @pytest.mark.unit
-    async def test_unicode_content_handling(self, temp_dir):
-        """Test handling files with unicode content."""
-        unicode_content = "Unicode test: 你好世界 🌍 émojis and accénts"
-        unicode_file = create_test_file(unicode_content, "unicode_content.txt", temp_dir)
+    async def test_unicode_object_content(self, monkeypatch):
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/unicode.txt",
+                Body="Unicode test: 你好世界 🌍 émojis and accénts".encode(),
+            )
 
-        result = await convert_file_impl(file_path=unicode_file)
+            result = await convert_file_impl(s3_key="workspaces/ws-1/unicode.txt")
 
         assert "Successfully converted" in result
         assert "你好世界" in result
         assert "émojis" in result
 
-    @pytest.mark.unit
-    async def test_binary_file_handling(self, temp_dir):
-        """Test handling of binary files."""
-        binary_content = bytes(range(256))  # 0-255 byte values
-        binary_file = Path(temp_dir) / "binary.bin"
-        binary_file.write_bytes(binary_content)
-
-        # Should either succeed or fail with a sanitized ToolError
-        try:
-            result = await convert_file_impl(file_path=str(binary_file))
-            assert "Successfully converted" in result
-        except ToolError:
-            pass
-
 
 class TestConvertFileFormats:
-    """Test convert_file with various file formats."""
+    """Test convert_file with various object formats."""
 
     @pytest.mark.unit
-    @pytest.mark.parametrize(
-        ("file_extension"),
-        [".txt", ".json", ".csv", ".html", ".xml", ".md"],
-    )
-    async def test_supported_text_formats(self, temp_dir, file_extension):
-        """Test conversion of various supported text formats."""
+    @pytest.mark.parametrize("file_extension", [".txt", ".json", ".csv", ".html", ".xml", ".md"])
+    async def test_supported_text_formats(self, monkeypatch, file_extension):
+        """Test conversion of various supported formats stored in S3."""
         content_map = {
             ".txt": "Plain text content",
             ".json": '{"key": "value", "number": 42}',
@@ -248,58 +331,100 @@ class TestConvertFileFormats:
             ".md": "# Markdown Title\n\nSome **bold** text.",
         }
 
-        content = content_map[file_extension]
-        test_file = create_test_file(content, f"test{file_extension}", temp_dir)
+        _env(monkeypatch)
+        with aws_backend():
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key=f"workspaces/ws-1/test{file_extension}",
+                Body=content_map[file_extension].encode(),
+            )
 
-        result = await convert_file_impl(file_path=test_file)
+            result = await convert_file_impl(s3_key=f"workspaces/ws-1/test{file_extension}")
 
         # Should succeed for all supported formats
         assert "Successfully converted" in result
 
 
 class TestConvertFileSecurityAspects:
-    """Test security aspects of convert_file tool."""
+    """Security aspects of convert_file tool."""
 
     @pytest.mark.unit
     @pytest.mark.security
-    async def test_path_traversal_prevention(self, malicious_path_attempts):
-        """Test that path traversal attacks are prevented."""
-        for malicious_path in malicious_path_attempts:
-            with pytest.raises(ToolError):
-                await convert_file_impl(file_path=malicious_path)
+    async def test_key_traversal_rejected(self, monkeypatch):
+        """Keys with traversal segments are rejected before any download."""
+        _env(monkeypatch)
+        for malicious_key in [
+            "workspaces/../etc/passwd",
+            "workspaces/ws/../../secret.txt",
+            "..\\..\\windows\\system32\\config\\sam",
+        ]:
+            with pytest.raises(ToolError, match="(?i)security violation"):
+                await convert_file_impl(s3_key=malicious_key)
 
     @pytest.mark.unit
     @pytest.mark.security
-    async def test_error_messages_are_sanitized(self, temp_dir):
-        """Error messages must not leak tracebacks or exception internals."""
-        # A file with an unsupported/corrupt structure for the converter
-        bad_file = Path(temp_dir) / "bad.docx"
-        bad_file.write_bytes(b"this is not a real docx")
+    async def test_prefix_allowlist_enforced(self, monkeypatch):
+        _env(monkeypatch, S3_KEY_PREFIXES="workspaces/allowed")
+        with pytest.raises(ToolError, match="(?i)security violation"):
+            await convert_file_impl(s3_key="users/42/report.txt")
 
-        try:
-            await convert_file_impl(file_path=str(bad_file))
-        except ToolError as e:
-            error_msg = str(e).lower()
-            assert "traceback" not in error_msg
-            assert "exception" not in error_msg
-            # Path must not leak the full local directory structure
-            assert temp_dir not in str(e)
+    @pytest.mark.unit
+    @pytest.mark.security
+    async def test_error_messages_are_sanitized(self, monkeypatch):
+        """Error messages must not leak tracebacks or S3 internals."""
+        _env(monkeypatch)
+        with aws_backend():
+            _make_bucket()
+            # A corrupt docx: conversion fails after download.
+            client = _make_bucket()
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/bad.docx",
+                Body=b"this is not a real docx",
+            )
+
+            try:
+                await convert_file_impl(s3_key="workspaces/ws-1/bad.docx")
+            except ToolError as e:
+                error_msg = str(e).lower()
+                assert "traceback" not in error_msg
+                assert "exception" not in error_msg
+                assert "multica-uploads" not in error_msg
 
 
 class TestConvertFileViaMCPClient:
     """Test convert_file through the full MCP tool-call path."""
 
     @pytest.mark.unit
-    async def test_tool_call_returns_text_content(self, sample_text_file):
+    async def test_tool_call_returns_text_content(self, monkeypatch):
         """Calling convert_file via MCP returns the markdown text."""
         from mcp.client import Client
 
         from markitdown_mcp import mcp
 
-        async with Client(mcp) as client:
-            result = await client.call_tool(
-                "convert_file", {"file_path": sample_text_file}
+        _env(monkeypatch)
+        with aws_backend():
+            _make_bucket()
+            import boto3
+            import os
+
+            client = boto3.client(
+                "s3",
+                region_name="us-east-1",
+                aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+                aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
             )
+            client.put_object(
+                Bucket="multica-uploads",
+                Key="workspaces/ws-1/sample.txt",
+                Body=b"This is a test file.",
+            )
+
+            async with Client(mcp) as mcp_client:
+                result = await mcp_client.call_tool(
+                    "convert_file", {"s3_key": "workspaces/ws-1/sample.txt"}
+                )
 
         assert result.is_error is not True
         text = result.content[0].text
@@ -307,17 +432,18 @@ class TestConvertFileViaMCPClient:
         assert "This is a test file" in text
 
     @pytest.mark.unit
-    async def test_tool_error_becomes_is_error_response(self):
-        """A ToolError surfaces as isError=true with a sanitized message."""
+    async def test_legacy_file_path_over_mcp_is_rejected(self, monkeypatch):
+        """file_path calls over MCP fail with guidance, not a crash."""
         from mcp.client import Client
 
         from markitdown_mcp import mcp
 
-        async with Client(mcp) as client:
-            result = await client.call_tool(
-                "convert_file", {"file_path": "nonexistent_file.txt"}
+        _env(monkeypatch)
+        async with Client(mcp) as mcp_client:
+            result = await mcp_client.call_tool(
+                "convert_file", {"file_path": "/etc/passwd"}
             )
 
         assert result.is_error is True
         error_text = result.content[0].text
-        assert "not found" in error_text.lower()
+        assert "s3_key" in error_text.lower()

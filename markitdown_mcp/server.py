@@ -23,7 +23,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("markitdown-mcp")
 
-mcp = MCPServer("markitdown-mcp", version="2.2.1")
+mcp = MCPServer("markitdown-mcp", version="3.0.0")
 
 _raw = os.getenv("MCP_AUTH_KEY", "")
 AUTH_KEYS: set[str] = {k.strip() for k in _raw.split(",") if k.strip()}
@@ -89,38 +89,23 @@ def _extract_bearer_token(header: str) -> str | None:
 
 
 @mcp.tool(name="convert_file")
-async def convert_file_tool(
-    file_path: str = "",
-    file_content: str = "",
-    filename: str = "",
-    s3_key: str = "",
-) -> str:
+async def convert_file_tool(s3_key: str, filename: str = "") -> str:
     """Convert one document to Markdown. Supported: pdf, docx, pptx, xlsx,
     xls, csv, json, xml, html, epub, zip, txt, md, rst, images.
 
-    Inputs are mutually alternative — pass exactly ONE of:
-      1. file_path: path on the SERVER's filesystem (not your local
-         machine). Use only for files already visible to the server.
-      2. s3_key: object key in the configured S3/MinIO store. PREFERRED
-         for platform-stored attachments. For multica attachments the key
-         is "workspaces/$MULTICA_WORKSPACE_ID/<attachment-id><ext>", where
-         <attachment-id> is the attachment's UUID and <ext> (including the
-         dot) comes from the attachment's filename. Keys outside the
-         configured prefixes are rejected. Optionally pass filename for a
-         nicer display name / correct suffix.
-      3. file_content: the raw bytes, base64-encoded (standard alphabet,
-         single line, no data URI prefix). Max 10 MB decoded. Use for
-         small files you already have in memory; pass filename too (its
-         extension is required for format detection).
+    The ONLY input is an S3 object key — the server fetches the object from
+    its configured S3/MinIO store and converts it. Inline content and
+    server-local file paths are not accepted.
 
-    Priority when several are given: file_path > s3_key > file_content.
+    s3_key: object key in the configured S3/MinIO store. For multica
+        attachments the key is "workspaces/$MULTICA_WORKSPACE_ID/
+        <attachment-id><ext>", where <attachment-id> is the attachment's
+        UUID and <ext> (including the dot) comes from the attachment's
+        filename. Keys outside the configured prefixes are rejected.
+    filename: optional display name (e.g. the attachment's original
+        filename); defaults to the key's basename.
     """
-    return await convert_file_impl(
-        file_path=file_path,
-        file_content=file_content,
-        filename=filename,
-        s3_key=s3_key,
-    )
+    return await convert_file_impl(s3_key=s3_key, filename=filename)
 
 
 @mcp.tool(name="list_supported_formats")

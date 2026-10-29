@@ -36,7 +36,9 @@ class TestMCPServerTools:
 
         convert_tool = next(t for t in result.tools if t.name == "convert_file")
         props = convert_tool.input_schema["properties"]
-        assert set(props.keys()) == {"file_path", "file_content", "filename", "s3_key"}
+        assert set(props.keys()) == {"s3_key", "filename"}
+        # s3_key is the one required input; filename is an optional nicety.
+        assert convert_tool.input_schema.get("required") == ["s3_key"]
 
     @pytest.mark.unit
     async def test_list_supported_formats_has_empty_schema(self):
@@ -64,9 +66,8 @@ class TestMCPServerTools:
 
     @pytest.mark.unit
     async def test_convert_file_description_guides_s3_usage(self):
-        """The description tells an agent how to build an s3_key and which
-        input to prefer — without it agents fall back to file_path/base64
-        and fail."""
+        """The description tells an agent how to build an s3_key — the only
+        input. Without the derivation rule agents cannot use the tool."""
         from mcp.client import Client
 
         async with Client(mcp) as client:
@@ -77,12 +78,10 @@ class TestMCPServerTools:
         # Key derivation rule for multica-style attachments
         assert "workspaces/" in desc
         assert "MULTICA_WORKSPACE_ID" in desc
-        # Inputs are mutually alternative with a documented priority
-        assert "file_path" in desc and "s3_key" in desc and "file_content" in desc
-        # file_path is a server-side path, not the agent's local filesystem
-        assert "server" in desc.lower()
-        # base64 must be single-line standard alphabet
-        assert "base64" in desc.lower()
+        # The removed inputs must not be advertised anymore.
+        assert "file_path" not in desc
+        assert "file_content" not in desc
+        assert "base64" not in desc.lower()
 
 
 class TestMCPProtocolHandshake:
@@ -95,7 +94,7 @@ class TestMCPProtocolHandshake:
 
         async with Client(mcp) as client:
             assert client.server_info.name == "markitdown-mcp"
-            assert client.server_info.version == "2.2.1"
+            assert client.server_info.version == "3.0.0"
             assert client.protocol_version
 
     @pytest.mark.unit
@@ -124,31 +123,22 @@ class TestMCPToolCallSemantics:
     """tools/call result semantics over the in-memory transport."""
 
     @pytest.mark.unit
-    async def test_call_result_carries_text_content(self, sample_text_file):
-        """A successful call returns text content blocks."""
-        from mcp.client import Client
-
-        async with Client(mcp) as client:
-            result = await client.call_tool("convert_file", {"file_path": sample_text_file})
-
-        assert result.is_error is not True
-        assert result.content
-        assert hasattr(result.content[0], "text")
-
-    @pytest.mark.unit
-    async def test_call_error_carries_sanitized_text(self):
+    async def test_call_error_carries_sanitized_text(self, monkeypatch):
         """A failing call returns isError=true, not a raised exception."""
         from mcp.client import Client
 
+        from tests.unit.test_convert_file_tool import _env
+
+        _env(monkeypatch)
         async with Client(mcp) as client:
             result = await client.call_tool(
-                "convert_file", {"file_path": "definitely_missing_file.txt"}
+                "convert_file", {"s3_key": "workspaces/ws/definitely-missing.txt"}
             )
 
         assert result.is_error is True
         assert result.content
         error_text = result.content[0].text
-        assert "not found" in error_text.lower()
+        assert "not found" in error_text.lower() or "not accessible" in error_text.lower()
 
 
 class TestFormatCatalogConsistency:

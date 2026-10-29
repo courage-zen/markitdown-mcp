@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Security helpers for the MarkItDown MCP server.
 
-Path validation, content sanitization, and resource-limit guards used by the
-conversion tools. All helpers raise :class:`SecurityError` on violation.
+S3-key validation, content sanitization, and resource-limit guards used by
+the conversion tools. All helpers raise :class:`SecurityError` on violation.
 """
 
-import base64
 import contextlib
 import csv
 import functools
@@ -327,50 +326,6 @@ def validate_file_content_security(file_path: str) -> str:
         return file_path
 
 
-def validate_base64(data: str, max_size: int = 10 * 1024 * 1024) -> bytes:
-    """Validate and decode base64 data with size limits.
-
-    Tolerates the common encodings agents produce: trailing newlines, MIME
-    line folding, embedded whitespace, and the URL-safe alphabet (-_
-    instead of +/). Garbage is still rejected outright.
-
-    Args:
-        data: Base64 encoded string
-        max_size: Maximum allowed decoded size in bytes
-
-    Returns:
-        Decoded bytes
-
-    Raises:
-        SecurityError: If validation fails
-    """
-    try:
-        # Basic format check
-        if not isinstance(data, str):
-            raise SecurityError("Security violation: invalid base64 format")
-
-        # Strip all ASCII whitespace (newlines, folding, spaces between chunks)
-        compact = "".join(data.split())
-
-        # Check for empty or too short strings
-        if not compact:
-            raise SecurityError("Security violation: invalid base64 data - empty content")
-
-        # Normalize the URL-safe alphabet to the standard one, then decode
-        # with strict validation so any remaining garbage is rejected.
-        normalized = compact.replace("-", "+").replace("_", "/")
-        decoded = base64.b64decode(normalized, validate=True)
-
-        # Check size limit
-        if len(decoded) > max_size:
-            raise SecurityError("Security violation: file too large")
-
-        return decoded
-
-    except Exception:
-        raise SecurityError("Security violation: invalid base64 data") from None
-
-
 def extract_text_from_binary(data: bytes, filename: str = "") -> str | None:  # noqa: ARG001
     """Extract readable text from potentially binary data.
 
@@ -511,135 +466,6 @@ def safe_convert_with_limits(markitdown_instance: Any, file_path: str) -> Any:
         if sanitized_file_path and sanitized_file_path != file_path:
             with contextlib.suppress(OSError, PermissionError):
                 Path(sanitized_file_path).unlink(missing_ok=True)
-
-
-def validate_and_sanitize_path(
-    file_path: str, allowed_dirs: list[str] | None = None
-) -> tuple[Path, bool]:
-    """Validate and sanitize file paths to prevent path traversal attacks.
-
-    Args:
-        file_path: The file path to validate
-        allowed_dirs: List of allowed directory prefixes (optional)
-
-    Returns:
-        Tuple of (sanitized_path, is_safe)
-
-    Raises:
-        SecurityError: If path is potentially malicious
-    """
-    try:
-        # Convert to Path object and resolve to absolute path
-        path = Path(file_path).resolve()
-
-        # Check for dangerous path patterns
-        path_str = str(path).lower()
-        dangerous_patterns = [
-            "/etc/",
-            "/proc/",
-            "/sys/",
-            "/dev/",
-            "/root/",
-            "/boot/",
-            "/usr/bin/",
-            "/usr/sbin/",
-            "/sbin/",
-            "/bin/",
-            "\\windows\\",
-            "\\system32\\",
-            "\\program files\\",
-            "\\programdata\\",
-            "\\users\\administrator\\",
-            "/var/log/",
-            "/var/run/",
-        ]
-
-        for pattern in dangerous_patterns:
-            if pattern in path_str:
-                raise SecurityError("Security violation: invalid path")
-
-        # Check for path traversal attempts in the original path
-        if ".." in file_path:
-            raise SecurityError("Security violation: path traversal detected")
-
-        # For absolute paths, check if they're in allowed directories
-        if file_path.startswith("/") or (len(file_path) > 2 and file_path[1] == ":"):
-            if allowed_dirs:
-                # Resolve allowed directories for proper comparison
-                resolved_allowed_dirs = [
-                    Path(allowed_dir).resolve() for allowed_dir in allowed_dirs
-                ]
-                is_allowed = any(
-                    path == allowed_dir or allowed_dir in path.parents
-                    for allowed_dir in resolved_allowed_dirs
-                )
-                if not is_allowed:
-                    raise SecurityError("Security violation: invalid path")
-            else:
-                # If no allowed dirs specified, check against temp directory
-                temp_dir = Path(tempfile.gettempdir()).resolve()
-                if not str(path).startswith(str(temp_dir)):
-                    raise SecurityError("Security violation: invalid path")
-
-        # Check file extension for potentially dangerous files
-        if path.suffix.lower() in DANGEROUS_EXTENSIONS:
-            raise SecurityError("Security violation: file type not allowed")
-
-        # Additional checks for hidden/system files
-        if path.name.startswith(".") and path.name in [".passwd", ".shadow", ".ssh", ".htaccess"]:
-            raise SecurityError("Security violation: invalid path")
-
-        return path, True
-
-    except (OSError, ValueError) as e:
-        raise SecurityError("Security violation: invalid path") from e
-
-
-def get_safe_working_directories() -> list[str]:
-    """Get list of safe working directories for file operations."""
-    import os
-
-    safe_dirs = []
-
-    # Add current working directory
-    safe_dirs.append(str(Path.cwd().resolve()))
-
-    # Add home directory subdirectories (but not root directories)
-    try:
-        home = Path.home()
-    except RuntimeError:
-        pass
-    else:
-        safe_subdirs = ["Documents", "Downloads", "Desktop", "tmp"]
-        for subdir in safe_subdirs:
-            potential_dir = home / subdir
-            if potential_dir.exists():
-                safe_dirs.append(str(potential_dir.resolve()))
-
-    # Add temp directories
-    temp_dir = Path(tempfile.gettempdir()).resolve()
-    safe_dirs.append(str(temp_dir))
-
-    # Add test fixtures directory if it exists
-    fixtures_dir = Path.cwd() / "tests" / "fixtures"
-    if fixtures_dir.exists():
-        safe_dirs.append(str(fixtures_dir.resolve()))
-
-    for raw_dir in os.environ.get("MARKITDOWN_SAFE_DIRS", "").split(os.pathsep):
-        if not raw_dir:
-            continue
-
-        configured_dir = Path(raw_dir).expanduser()
-        if not configured_dir.is_absolute():
-            continue
-        if not configured_dir.exists():
-            continue
-        if not configured_dir.is_dir():
-            continue
-
-        safe_dirs.append(str(configured_dir.resolve()))
-
-    return safe_dirs
 
 
 def validate_s3_key(key: str, allowed_prefixes: list[str] | None = None) -> str:

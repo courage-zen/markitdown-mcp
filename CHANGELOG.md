@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-10-29
+
+### Changed
+- **`convert_file` now takes exactly one input: `s3_key` (required).** The
+  server fetches the object from its configured S3-compatible store and
+  converts it. This deployment serves multica agents whose attachments all
+  live in MinIO, so a single, unambiguous input beats three alternative ones.
+  - The `file_path` (server-local path) input is removed. The server no
+    longer reads the host filesystem on any tool path.
+  - The `file_content` (base64) input is removed. In practice it never
+    worked for real attachments: agents hit the client-side tool-input size
+    limit (~254 KB of JSON) on any file worth converting, and wasted turns
+    retrying truncated or unpadded base64.
+  - `filename` remains optional, purely as a display name / nicer suffix.
+  - Schema: `{"s3_key": string (required), "filename": string (optional)}`.
+    **Breaking** for any caller passing `file_path` or `file_content` —
+    those calls now fail with a message pointing at `s3_key`.
+  - S3 configuration (`S3_BUCKET` + credentials) is now required for the
+    server to convert anything; unconfigured servers answer "not configured".
+
+### Security
+- The server-filesystem attack surface is gone: `convert_file` cannot read
+  local paths, so traversal/symlink/allowlist path checks no longer guard a
+  reachable code path. S3-key validation (``..``-segments, dangerous
+  extensions, prefix allowlist) runs before any download, and all conversion
+  content guards are unchanged.
+
 ## [2.2.1] - 2026-10-29
 
 ### Fixed
