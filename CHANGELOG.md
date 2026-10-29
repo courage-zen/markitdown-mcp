@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-10-29
+
+### Added
+- **`s3_key` accepts a full storage URL.** Agents can paste the
+  attachment's `url` field from issue/comment JSON as-is; the server
+  normalizes it (strips scheme/host/query/fragment, and the bucket
+  segment on path-style URLs) before validation, so traversal,
+  extension, and prefix checks run on the recovered key. Mirrors the
+  multica backend's `KeyFromURL` semantics.
+- **Wrong-prefix errors now teach the key format.** The rejection
+  message includes the `workspaces/<workspace-id>/<attachment-id><ext>`
+  template and both recovery paths (paste the url / build from id and
+  filename), turning a failed call into a self-correction.
+
+### Changed
+- **`convert_file` description is purpose-first.** It now leads with
+  "to read a Multica attachment, call this tool" and names the office
+  formats, documents the key derivation from the issue JSON, and states
+  the output limitation (values, not formulas/merged-cell structure).
+  Field feedback: an agent skipped this tool and hand-wrote an xlsx
+  parser because the description led with S3 mechanics. Schema and tool
+  names unchanged.
+- **`list_supported_formats` description routes unsure agents** to call
+  it before `convert_file`.
+
 ## [3.0.0] - 2026-10-29
 
 ### Changed
